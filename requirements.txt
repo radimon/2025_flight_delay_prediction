@@ -9,3 +9,4 @@ scipy
 ipywidgets
 scikit-learn
 lightgbm
+openai
