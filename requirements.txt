@@ -10,3 +10,4 @@ ipywidgets
 scikit-learn
 lightgbm
 openai
+torch
