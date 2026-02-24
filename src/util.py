@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 def circle_radius_by_mass(cand_xy: np.ndarray, p_pred: np.ndarray, x0: float, y0: float, alpha: float):
     """
@@ -42,3 +43,42 @@ def select_mass_region(cells_xy: np.ndarray, probs: np.ndarray, alpha: float):
     k = int(np.searchsorted(cum, alpha, side="left")) + 1
     idx = order[:k]
     return idx
+
+# 補零
+def densify_topk_series(df_raw: pd.DataFrame, top_k=20000):
+    """
+    df_raw 需要欄位: d,t,x,y,count
+    回傳：只含 top_k 個 (x,y,t) 且已補齊所有 d 的 DataFrame
+    """
+    df = df_raw[["d","t","x","y","count"]].copy()
+
+    # 選最活躍的 (x,y,t)：用總量或出現天數都可以
+    key_sum = df.groupby(["x","y","t"])["count"].sum().sort_values(ascending=False)
+    top_keys = key_sum.head(top_k).index
+
+    df = df.set_index(["x","y","t"]).loc[top_keys].reset_index()
+
+    dmin, dmax = int(df["d"].min()), int(df["d"].max())
+    all_d = np.arange(dmin, dmax + 1, dtype=int)
+
+    out = []
+    for (x,y,t), g in df.groupby(["x","y","t"], sort=False):
+        g2 = g.set_index("d").reindex(all_d)
+        g2["count"] = g2["count"].fillna(0.0)
+        g2["d"] = all_d
+        g2["x"] = x; g2["y"] = y; g2["t"] = t
+        out.append(g2[["d","t","x","y","count"]])
+
+    return pd.concat(out, ignore_index=True)
+
+#切資料
+def split_by_day(df, test_days=7, val_days=7):
+    max_day = int(df["d"].max())
+    test_start = max_day - test_days + 1
+    val_start  = test_start - val_days
+
+    train_df = df[df["d"] < val_start].copy()
+    val_df   = df[(df["d"] >= val_start) & (df["d"] < test_start)].copy()
+    test_df  = df[df["d"] >= test_start].copy()
+
+    return train_df, val_df, test_df
