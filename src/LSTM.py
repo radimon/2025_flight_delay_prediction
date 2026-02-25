@@ -19,12 +19,19 @@ class SeqDatasetEmbed(Dataset):
         self.y_id = df['y'].to_numpy(dtype=np.int64)
         self.is_weekend = df["is_weekend"].to_numpy(dtype=np.float32)
 
-        # 目標：log1p(count) 穩定訓練
-        self.y = np.log1p(df["count"].to_numpy(dtype=np.float32))
+         # baseline log（可選）
+        self.base_log = df["base_log"].to_numpy(dtype=np.float32) if "base_log" in df.columns else None
+
+        # target：若有 y_target 就用（residual learning），否則維持原本 log1p(count)
+        if "y_target" in df.columns:
+            self.y = df["y_target"].to_numpy(dtype=np.float32)
+        else:
+            self.y = np.log1p(df["count"].to_numpy(dtype=np.float32))
 
     def __len__(self): return len(self.y)
 
     def __getitem__(self, i):
+        base_log_i = 0.0 if self.base_log is None else float(self.base_log[i])
         return (
             torch.from_numpy(self.X_seq[i]),
             torch.tensor(self.weekday[i], dtype=torch.long),
@@ -32,6 +39,7 @@ class SeqDatasetEmbed(Dataset):
             torch.tensor(self.x_id[i], dtype=torch.long),
             torch.tensor(self.y_id[i], dtype=torch.long),
             torch.tensor([self.is_weekend[i]], dtype=torch.float32),  # shape (1,)
+            torch.tensor([base_log_i], dtype=torch.float32),
             torch.tensor(self.y[i], dtype=torch.float32),
         )
 
@@ -71,7 +79,9 @@ class LSTMRegEmbed(nn.Module):
         return self.head(z).squeeze(1)     # log1p(count)
     
 
-def train_lstm_embed(model, train_df, val_df, seq_len, sample_n=800_000, batch_size=1024, epochs=50, lr=1e-3, seed=42):
+def train_lstm_embed(model, train_df, val_df, seq_len, 
+                     loss="mse", huber_beta=1.0, use_residual=False,
+                     sample_n=800_000, batch_size=1024, epochs=20, lr=1e-3, seed=42):
     torch.manual_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -87,7 +97,10 @@ def train_lstm_embed(model, train_df, val_df, seq_len, sample_n=800_000, batch_s
 
     model = model.to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = nn.MSELoss()
+    if loss == "huber":
+        loss_fn = nn.SmoothL1Loss(beta=huber_beta)   # Huber
+    else:
+        loss_fn = nn.MSELoss()
 
     best_rmse = float("inf")
     best_state = None
@@ -95,10 +108,10 @@ def train_lstm_embed(model, train_df, val_df, seq_len, sample_n=800_000, batch_s
 
     for ep in range(1, epochs+1):
         model.train()
-        for xseq, wd, tid, xid, yid, isw, y in dl_tr:
-            xseq, wd, tid, xid, yid, isw, y = (
+        for xseq, wd, tid, xid, yid, isw, base_log, y in dl_tr:
+            xseq, wd, tid, xid, yid, isw, base_log, y = (
                 xseq.to(device), wd.to(device), tid.to(device), xid.to(device),
-                yid.to(device), isw.to(device), y.to(device)
+                yid.to(device), isw.to(device), base_log.to(device), y.to(device)
             )
             pred = model(xseq, wd, tid, xid, yid, isw)
             loss = loss_fn(pred, y)
@@ -110,15 +123,23 @@ def train_lstm_embed(model, train_df, val_df, seq_len, sample_n=800_000, batch_s
         model.eval()
         preds, ys = [], []
         with torch.no_grad():
-            for xseq, wd, tid, xid, yid, isw, y in dl_va:
-                xseq, wd, tid, xid, yid, isw = (
+            for xseq, wd, tid, xid, yid, isw, base_log, y in dl_va:
+                xseq, wd, tid, xid, yid, isw, base_log = (
                     xseq.to(device), wd.to(device), tid.to(device), xid.to(device),
-                    yid.to(device), isw.to(device)
+                    yid.to(device), isw.to(device), base_log.to(device)
                 )
-                pred_log = model(xseq, wd, tid, xid, yid, isw).cpu().numpy()
-                y_log = y.numpy()
-                preds.append(np.expm1(pred_log))
-                ys.append(np.expm1(y_log))
+                pred_log = model(xseq, wd, tid, xid, yid, isw)
+
+                if use_residual:
+                    # pred_log 是 residual(log space)，加回 baseline log
+                    pred_log_full = pred_log + base_log.squeeze(1)
+                    y_log_full = y + base_log.squeeze(1)
+                else:
+                    pred_log_full = pred_log
+                    y_log_full = y
+
+                preds.append(np.expm1(pred_log_full.cpu().numpy()))
+                ys.append(np.expm1(y_log_full.cpu().numpy()))
 
         yhat = np.concatenate(preds)
         ytrue = np.concatenate(ys)
@@ -139,21 +160,27 @@ def train_lstm_embed(model, train_df, val_df, seq_len, sample_n=800_000, batch_s
         model.load_state_dict(best_state)
     return model
 
-def predict_lstm_embed(model, df_split, seq_len, batch_size=2048):
+def predict_lstm_embed(model, df_split, seq_len, batch_size=2048, use_residual=False):
     device = next(model.parameters()).device
     ds = SeqDatasetEmbed(df_split, seq_len)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
     model.eval()
     preds = []
     with torch.no_grad():
-        for xseq, wd, tid, xid, yid, isw, _y in dl:
-            xseq, wd, tid, xid, yid, isw = (
+        for xseq, wd, tid, xid, yid, isw, base_log, _y in dl:
+            xseq, wd, tid, xid, yid, isw, base_log = (
                 xseq.to(device), wd.to(device), tid.to(device), xid.to(device),
-                yid.to(device), isw.to(device)
+                yid.to(device), isw.to(device), base_log.to(device)
             )
-            pred_log = model(xseq, wd, tid, xid, yid, isw).cpu().numpy()
-            preds.append(np.expm1(pred_log))
-    return np.concatenate(preds)
+            pred_log = model(xseq, wd, tid, xid, yid, isw)
+            
+            if use_residual:
+                pred_log = pred_log + base_log.squeeze(1)
+
+            preds.append(np.expm1(pred_log.cpu().numpy()))
+
+    yhat = np.concatenate(preds)
+    return np.clip(yhat, 0, None)
 
 def save_lstm_pkl(model, path_pkl, config: dict):
     payload = {
