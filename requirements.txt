@@ -11,3 +11,4 @@ scikit-learn
 lightgbm
 openai
 torch
+dotenv
