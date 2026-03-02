@@ -49,10 +49,19 @@ class ConfidenceEngine:
         """使用 LLM 解析使用者輸入，並嚴格過濾欄位"""
         TODAY = datetime.date.today()
         
-        prompt = f"""你是查詢解析器。今天日期是 {TODAY}。把文字轉成 JSON。
-        必須使用以下英文鍵名：city, date, weekday, hhmm, radius_m, place, place_variants。
-        weekday 請給整數 (0=週一, 5=週六, 6=週日)。
-        使用者輸入：{text}"""
+        prompt = f"""
+            你是查詢解析器。今天日期是 {TODAY}。
+            把文字轉成 JSON。
+
+            必須使用以下英文鍵名：
+            city, date, weekday, hhmm, radius_m, place, place_variants。
+
+            weekday 必須是整數。
+            radius_m 必須是數字或 null。
+            不要輸出文字型 radius。
+
+            使用者輸入：{text}
+            """
 
         resp = self.client.chat.completions.create(
             model="gpt-4o",
@@ -75,6 +84,13 @@ class ConfidenceEngine:
         # 2. 【核心修正】只留下 CrowdQuery 定義過的欄位，過濾掉「地點」等不認識的參數
         allowed_names = {f.name for f in fields(CrowdQuery)}
         final_init_data = {k: v for k, v in processed_data.items() if k in allowed_names}
+
+        # 強制型別修正
+        if "radius_m" in final_init_data:
+            try:
+                final_init_data["radius_m"] = float(final_init_data["radius_m"])
+            except:
+                final_init_data["radius_m"] = None
 
         # 3. 補足必填缺失值
         if "city" not in final_init_data: final_init_data["city"] = default_city
@@ -120,36 +136,99 @@ class ConfidenceEngine:
         return int(self.grid_xy_lookup.loc[idx, "x"]), int(self.grid_xy_lookup.loc[idx, "y"])
 
     def calculate_circles(self, q: CrowdQuery, x0, y0, coverages=(0.5, 0.8, 0.95)):
-        """計算信心圓圈"""
+        """計算信心圓圈（完整版，對齊 notebook 邏輯）"""
+
         t_slot = self.time_to_slot(q.hhmm)
-        
-        # 尋找資料中最近的一天（處理 weekday 匹配）
+
+        # --- 選擇對應 weekday 的 d ---
+        tmp_days = self.df_pred[["d"]].drop_duplicates().copy()
+        tmp_days["weekday"] = (tmp_days["d"] % 7)
+
         target_weekday = q.weekday if q.weekday is not None else 0
-        possible_days = self.df_pred[self.df_pred["d"] % 7 == target_weekday]["d"]
-        
-        if possible_days.empty:
-            d_use = self.df_pred["d"].max()
-        else:
-            d_use = int(possible_days.max())
-        
-        pred_slice = self.df_pred[(self.df_pred["d"]==d_use) & (self.df_pred["t"]==t_slot)].copy()
-        
+        cand_days = tmp_days[tmp_days["weekday"] == target_weekday]["d"].tolist()
+
+        if not cand_days:
+            raise ValueError("找不到對應 weekday 的資料日 d")
+
+        d_use = int(cand_days[-1])  # 用最後一天
+
+        # --- 切出預測資料 ---
+        pred_slice = self.df_pred[
+            (self.df_pred["d"] == d_use) &
+            (self.df_pred["t"] == t_slot)
+        ][["x", "y", "score"]].copy()
+
         if pred_slice.empty:
-            raise ValueError(f"找不到日期 d={d_use}, 時段 t={t_slot} 的預測資料")
+            raise ValueError("該時段沒有預測資料")
+
+        # --- 半徑設定 ---
+        cell_m = cell_size_m_at(self.mapper, x0, y0)
+        radius_m = 400 if q.radius_m is None else float(q.radius_m)
+        radius_cells = int(np.ceil(radius_m / max(cell_m, 1e-6)))
+
+        MAX_RADIUS_CELLS = 128
+        MIN_CAND = 20
+
+        cells_xy = pred_slice[["x", "y"]].to_numpy()
+        dist = np.hypot(cells_xy[:, 0] - x0, cells_xy[:, 1] - y0)
+
+        # --- 初始 window ---
+        win0 = max(radius_cells, 3)
+
+        while True:
+            cand0 = pred_slice[dist <= win0 + 1e-9]
+            if len(cand0) >= MIN_CAND or win0 >= MAX_RADIUS_CELLS:
+                break
+            win0 *= 2
+
+        if len(cand0) < 5:
+            raise ValueError("附近候選格太少，請加大 radius")
 
         circles = []
-        p = normalize_nonneg(pred_slice["score"].to_numpy())
-        coords = pred_slice[["x","y"]].to_numpy()
-        
+
         for alpha in coverages:
-            r, idx_circle = circle_radius_by_mass(coords, p, x0, y0, alpha)
+            win = win0
+
+            while True:
+                cand = pred_slice[dist <= win + 1e-9]
+
+                if len(cand) < 5:
+                    raise ValueError("附近候選格太少")
+
+                cand_xy = cand[["x", "y"]].to_numpy()
+                p = normalize_nonneg(cand["score"].to_numpy())
+
+                r, idx_circle = circle_radius_by_mass(
+                    cand_xy, p, x0, y0, alpha
+                )
+
+                achieved = float(p[idx_circle].sum())
+
+                if achieved >= alpha or win >= MAX_RADIUS_CELLS:
+                    break
+
+                win *= 2
+
             circles.append({
-                "alpha": alpha, 
-                "radius_cells": r, 
-                "achieved_mass": float(p[idx_circle].sum())
+                "alpha": alpha,
+                "center_grid": {"x": float(x0), "y": float(y0)},
+                "radius_cells": r,
+                "n_cells": int(len(idx_circle)),
+                "achieved_mass": achieved,
+                "window_cells": win
             })
-            
+
         return {
-            "query": {"center_grid": {"x": x0, "y": y0}, "d_used": d_use, "t_slot": t_slot}, 
+            "query": {
+                "city": q.city,
+                "place": q.place,
+                "weekday": q.weekday,
+                "hhmm": q.hhmm,
+                "t_slot": t_slot,
+                "d_used": d_use,
+                "center_grid": {"x": x0, "y": y0},
+                "radius_m": float(radius_m),
+                "radius_cells": radius_cells,
+            },
             "circles": circles
         }
