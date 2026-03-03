@@ -235,3 +235,22 @@ def save_lstm_pkl(model, path_pkl, config: dict):
     }
     torch.save(payload, path_pkl)   # 用 torch 的序列化最穩（副檔名可叫 .pkl）
     
+def load_lstm_embed(path):
+    ckpt = torch.load(path, map_location="cpu")
+    cfg = ckpt["config"]
+
+    model = LSTMRegEmbed(
+        hidden=cfg["hidden"],
+        layers=cfg["layers"],
+        n_weekday=cfg["n_weekday"],
+        n_t=cfg["n_t"],
+        n_x=cfg["n_x"],
+        n_y=cfg["n_y"],
+        emb_wd=cfg["emb_wd"],
+        emb_t=cfg["emb_t"],
+        emb_x=cfg["emb_x"],
+        emb_y=cfg["emb_y"],
+    )
+    model.load_state_dict(ckpt["state_dict"])
+    model.eval()
+    return model, cfg

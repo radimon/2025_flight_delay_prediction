@@ -10,10 +10,12 @@ from src.confidence_engine import ConfidenceEngine
 from src.util import *
 from src.preprocess import *
 from src.LSTM import *
+from src.ConvLSTM import *
 
-LSTM_PATH    = "models/lstm_sapporo.pkl"
+LSTM_PATH = "models/lstm_sapporo.pkl"
+CONVLSTM_PATH = "models/convlstm_sapporo.pkl"
 PARQUET_PATH = "data/processed/sapporo_density.parquet"
-SAVED_FILLED_ZERO_DATA_PATH =  "data/processed/sapporo_density_filled_zero.parquet"
+SAVED_FILLED_ZERO_DATA_PATH = "data/processed/sapporo_density_filled_zero.parquet"
 
 NEED_TRAIN = False
 REBUILD_DATA = False
