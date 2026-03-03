@@ -29,9 +29,40 @@ def normalize_nonneg(x):
     s = x.sum()
     return x / s if s > 0 else np.ones_like(x) / len(x)
 
+def dataset_stats(y):
+    y = np.asarray(y, float)
+    return {
+        "n": len(y),
+        "zero_ratio": float((y==0).mean()),
+        "mean": float(y.mean()),
+        "std": float(y.std()),
+        "p90": float(np.percentile(y, 90)),
+        "p99": float(np.percentile(y, 99)),
+    }
+
 
 # ============================================================
-# 2) Old UI map (points + panels + legend)
+# 2) Data preprocess
+# ============================================================
+def softmax(x: np.ndarray, temp: float = 1.0) -> np.ndarray:
+    x = np.asarray(x, dtype=float) / max(temp, 1e-9)
+    x = x - np.max(x)
+    e = np.exp(x)
+    s = e.sum()
+    return e / s if s > 0 else np.ones_like(e) / len(e)
+
+def select_mass_region(cells_xy: np.ndarray, probs: np.ndarray, alpha: float):
+    """
+    Return indices of smallest set S such that sum(probs[S]) >= alpha
+    """
+    order = np.argsort(-probs)
+    cum = np.cumsum(probs[order])
+    k = int(np.searchsorted(cum, alpha, side="left")) + 1
+    idx = order[:k]
+    return idx
+
+# ============================================================
+# 3) Old UI map (points + panels + legend)
 # ============================================================
 
 def plot_query_on_map(
@@ -39,7 +70,7 @@ def plot_query_on_map(
     mapper,
     df_pred,
     city_bounds_dict,
-    save_path="predict_confidence.html",
+    save_path="predict_confidence2.html",
     add_heatmap=False,   # 你想要舊 UI：預設 False
 ):
     """
@@ -107,16 +138,18 @@ def plot_query_on_map(
 
     # Circles
     alpha_color = {0.5: "red", 0.8: "orange", 0.95: "blue"}
-    for c in resp["circles"]:
+    for c in sorted(resp["circles"], key=lambda c: float(c["alpha"])):
         a = float(c["alpha"])
         # 允許浮點誤差
         a_key = min(alpha_color.keys(), key=lambda k: abs(k - a))
         color = alpha_color[a_key]
 
         radius_m = float(c["radius_cells"]) * cell_m
+        dash = {0.5: None, 0.8: "6,6", 0.95: "1,6"}
         folium.Circle(
             location=[lat0, lng0],
             radius=radius_m,
+            dash_array=dash[a_key],
             color=color,
             fill=True,
             fill_opacity=0.10,
@@ -124,7 +157,9 @@ def plot_query_on_map(
         ).add_to(m)
 
     # Colormap for points
-    smin, smax = float(sl["score"].min()), float(sl["score"].max())
+    smin = float(sl["score"].quantile(0.05))
+    smax = float(sl["score"].quantile(0.95))
+    sl["score_vis"] = sl["score"].clip(smin, smax)
     cmap = linear.YlOrRd_09.scale(smin, smax)
 
     # grid -> lat/lng for points

@@ -56,9 +56,15 @@ class ConfidenceEngine:
             必須使用以下英文鍵名：
             city, date, weekday, hhmm, radius_m, place, place_variants。
 
-            weekday 必須是整數。
-            radius_m 必須是數字或 null。
-            不要輸出文字型 radius。
+             規則：
+              - weekday 使用 0=週日 ... 6=週六的規律，必須是整數。
+              - hhmm 一律輸出 24 小時制 "HH:MM"
+              - 若有「附近」但沒數字距離，radius_m=400
+              - 若沒提城市，city 用 default_city
+              - 若提到「今天/明天/後天」，請換算成 date="YYYY-MM-DD"
+              - 若 date 有值，weekday 也要填正確（可由 date 推得）
+              - place 只能是地點名稱本身（例如「札幌站」），不得包含「週六、07:00、附近」等其他詞；如果使用者沒有輸入地點就回傳 null。
+              - place_variants 是使用者所輸入的 place 名稱的別名陣列，產生10個以內的日文、中文或英文別名。例如札幌站的別名有:["札幌站", "札幌車站", "札幌駅", "JR札幌駅", "Sapporo Station", "JR Sapporo Station", "札幌駅 北海道"]
 
             使用者輸入：{text}
             """

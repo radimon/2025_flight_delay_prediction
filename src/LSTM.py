@@ -182,6 +182,52 @@ def predict_lstm_embed(model, df_split, seq_len, batch_size=2048, use_residual=F
     yhat = np.concatenate(preds)
     return np.clip(yhat, 0, None)
 
+def make_df_pred_lstm_embed(df_feat, lstm_model, cfg, batch_size=2048, use_residual=False):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    lstm_model.to(device)
+    lstm_model.eval()
+
+    seq_len = cfg["seq_len"]
+    lag_cols = [f"lag_{k}" for k in range(seq_len, 0, -1)]  # 舊→新
+
+    X_seq = df_feat[lag_cols].to_numpy(np.float32)[:, :, None]
+    weekday = df_feat["weekday"].to_numpy(np.int64)
+    t_id    = df_feat["t"].to_numpy(np.int64)
+    x_id    = df_feat["x"].to_numpy(np.int64)
+    y_id    = df_feat["y"].to_numpy(np.int64)
+    is_wknd = df_feat["is_weekend"].to_numpy(np.float32)[:, None]
+
+    if use_residual:
+        if "base_log" not in df_feat.columns:
+            raise ValueError("use_residual=True 需要 df_feat 內有 'base_log' 欄位（log1p(y_hist)）。")
+        base_log_all = df_feat["base_log"].to_numpy(np.float32)
+
+    preds = []
+    n = len(df_feat)
+    with torch.no_grad():
+        for i in range(0, n, batch_size):
+            xs = torch.from_numpy(X_seq[i:i+batch_size]).to(device)
+            wd = torch.from_numpy(weekday[i:i+batch_size]).to(device)
+            tt = torch.from_numpy(t_id[i:i+batch_size]).to(device)
+            xx = torch.from_numpy(x_id[i:i+batch_size]).to(device)
+            yy = torch.from_numpy(y_id[i:i+batch_size]).to(device)
+            wk = torch.from_numpy(is_wknd[i:i+batch_size]).to(device)
+
+            pred_log = lstm_model(xs, wd, tt, xx, yy, wk).cpu().numpy()  # log1p(count)
+
+            if use_residual:
+                base = torch.from_numpy(base_log_all[i:i+batch_size]).to(device)  # (B,)
+                pred_log = pred_log + base
+
+            pred = np.expm1(pred_log)                                    # 回到 count
+            preds.append(pred)
+
+    score = np.clip(np.concatenate(preds), 0, None)
+
+    df_pred = df_feat[["d","t","x","y"]].copy()
+    df_pred["score"] = score
+    return df_pred
+
 def save_lstm_pkl(model, path_pkl, config: dict):
     payload = {
         "state_dict": model.state_dict(),

@@ -1,12 +1,22 @@
 import joblib
 import pandas as pd
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
 from src.geo.grid_to_latlng import GridLatLngMapper
 from src.confidence_engine import ConfidenceEngine
-from src.util import plot_query_on_map
+from src.util import *
+from src.preprocess import *
+from src.LSTM import *
 
+LSTM_PATH    = "models/lstm_sapporo.pkl"
+PARQUET_PATH = "data/processed/sapporo_density.parquet"
+SAVED_FILLED_ZERO_DATA_PATH =  "data/processed/sapporo_density_filled_zero.parquet"
+
+NEED_TRAIN = False
+REBUILD_DATA = False
 
 def main():
 
@@ -14,46 +24,71 @@ def main():
     client = OpenAI()
 
     print("正在載入模型與原始資料...")
-    model = joblib.load("models/lgbm_sapporo_2.pkl")
-    df = pd.read_parquet("data/processed/sapporo_density.parquet")
+    df_raw = prepare_base_df(PARQUET_PATH, remove_sentinel=True)
+
+    if REBUILD_DATA:
+        df_true = densify_topk_series(df_raw, top_k=500000) # 對raw data進行補零
+        save_filled_zero_data(df_true, SAVED_FILLED_ZERO_DATA_PATH)
+    else:
+        df_true = pd.read_parquet(SAVED_FILLED_ZERO_DATA_PATH).copy()
+
+    model, cfg = load_lstm_embed(LSTM_PATH) #載入model
+    SEQ_LEN = cfg["seq_len"]
 
     print("執行特徵工程中...")
+    df_feat = add_lags_and_rollings(df_true.copy(), seq_len=SEQ_LEN, start_date="2023-01-01")
 
-    df = df[(df["x"] != 999) | (df["y"] != 999)].copy()
+    need_lstm = [f"lag_{k}" for k in range(1, SEQ_LEN+1)]
+    df_feat = df_feat.dropna(subset=need_lstm).copy()
 
-    df["date"] = pd.to_datetime("2023-01-01") + pd.to_timedelta(df["d"], unit="D")
-    df["weekday"] = df["date"].dt.weekday
-    df["is_weekend"] = (df["weekday"] >= 5).astype(int)
+    train_df, val_df, test_df = split_by_day(df_feat, test_days=7, val_days=7)
+    print(len(train_df), len(val_df), len(test_df))
 
-    df = df.sort_values(["x", "y", "t", "d"])
+    #若需要重新訓練
+    if NEED_TRAIN:
+        # 用更大的 top_k 重新產資料，就應該 同步更新 cfg 的 n_x/n_y 再建模
+        cfg["n_weekday"] = 7
+        cfg["n_t"] = 48
+        cfg["n_x"] = int(df_feat["x"].max()) + 1
+        cfg["n_y"] = int(df_feat["y"].max()) + 1
 
-    df["lag_1"] = df.groupby(["x", "y", "t"])["count"].shift(1)
-    df["lag_7"] = df.groupby(["x", "y", "t"])["count"].shift(7)
-    df["rolling_3"] = df.groupby(["x", "y", "t"])["count"].transform(
-        lambda x: x.shift(1).rolling(3).mean()
-    )
-    df["rolling_7"] = df.groupby(["x", "y", "t"])["count"].transform(
-        lambda x: x.shift(1).rolling(7).mean()
-    )
+        # 不要用 load 進來的舊 model，改用新 cfg 重建
+        model = LSTMRegEmbed(
+            hidden=cfg["hidden"], layers=cfg["layers"],
+            n_weekday=cfg["n_weekday"], n_t=cfg["n_t"],
+            n_x=cfg["n_x"], n_y=cfg["n_y"],
+            emb_wd=cfg["emb_wd"], emb_t=cfg["emb_t"],
+            emb_x=cfg["emb_x"], emb_y=cfg["emb_y"],
+        )
 
-    df_feat = df.dropna().copy()
+        # train
+        model = train_lstm_embed(
+            model=model,
+            train_df=train_df,
+            val_df=val_df,
+            seq_len=SEQ_LEN,
+            epochs=20,
+            lr=1e-3,
+            batch_size=1024,
+            seed=42,
+            loss="huber", 
+            huber_beta=2.0,
+            use_residual=True
+        )
 
-    features = [
-        "weekday", "t", "x", "y",
-        "is_weekend", "lag_1", "lag_7",
-        "rolling_3", "rolling_7"
-    ]
+        save_lstm_pkl(model, LSTM_PATH, cfg)
 
-    print(f"預測中 (樣本數: {len(df_feat)})...")
-    df_feat["score"] = model.predict(df_feat[features])
-    df_feat["score"] = df_feat["score"].clip(lower=0)
-
-    df_pred = df_feat[["d", "t", "x", "y", "score"]].copy()
+    # 產出預測的人流
+    df_pred = make_df_pred_lstm_embed(df_feat, model, cfg)
+   
 
     anchors = [
-        {"x": 24, "y": 151, "lat": 43.069183, "lng": 141.351470},
-        {"x": 26, "y": 153, "lat": 43.057985, "lng": 141.354021},
-        {"x": 52, "y": 81, "lat": 43.198231, "lng": 140.994036}
+        {"x": 24, "y": 151, "lat": 43.06918333153887, "lng": 141.35147072116592},  # 札幌站 
+        {"x": 24, "y": 148, "lat": 43.07940372979633, "lng": 141.34225589803765},  # 北海道大學
+        {"x": 26, "y": 153, "lat": 43.05798589528942, "lng": 141.35402112326315},  # 狸小路商店街
+        {"x": 52, "y": 81, "lat": 43.1982317547878, "lng": 140.99403634015297},  # 小樽站
+        {"x": 50, "y": 41, "lat": 43.188064114901195, "lng": 140.79455411455163},  # 余市站
+        {"x": 182, "y": 186, "lat": 43.85360951281324, "lng": 141.52348814480132},  # 増毛町文化センター
     ]
 
     mapper = GridLatLngMapper(anchors)
