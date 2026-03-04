@@ -23,8 +23,13 @@ python -m pip install -r requirements.txt
 ```
 for venv
 ```bash
-.\venv312\Scripts\python.exe -m pip install --upgrade pip
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+Remove-Item -Recurse -Force .\venv312
+py -3.12 -m venv venv312
+.\venv312\Scripts\Activate.ps1
+py -m pip install --upgrade pip
 .\venv312\Scripts\python.exe -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install -r requirements.txt
 ```
 
 ## Data
