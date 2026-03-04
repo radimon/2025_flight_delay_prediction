@@ -189,7 +189,7 @@ def plot_query_on_map(
         score = float(ll.iloc[i].score)
         color = cmap(score)
 
-        rr = 2 + 6 * (score - smin) / (smax - smin + 1e-12)
+        rr = 2 + 3 * (score - smin) / (smax - smin + 1e-12)
 
         folium.CircleMarker(
             location=[lat, lng],

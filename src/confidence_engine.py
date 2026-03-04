@@ -11,14 +11,18 @@ from src.str_similarity import similarity, importance, best_label
 from src.util import normalize_nonneg, circle_radius_by_mass
 from src.geo.grid_to_latlng import cell_size_m_at, haversine_m
 
+# ✅ 你的 d=0 對應的起始日期（你說是 2019-09-15）
+# 之後要換起點，只改這行
+START_DATE = datetime.date(2019, 9, 15)
+
 @dataclass
 class CrowdQuery:
     city: str
-    date: str | None 
-    weekday: int | None      
-    hhmm: str | None         
+    date: str | None
+    weekday: int | None
+    hhmm: str | None
     radius_m: float | None
-    place: str | None        
+    place: str | None
     place_variants: List[str] | None
     lat: float | None = None
     lon: float | None = None
@@ -48,7 +52,7 @@ class ConfidenceEngine:
     def parse_query_llm(self, text: str, default_city="sapporo") -> CrowdQuery:
         """使用 LLM 解析使用者輸入，並嚴格過濾欄位"""
         TODAY = datetime.date.today()
-        
+
         prompt = f"""
             你是查詢解析器。今天日期是 {TODAY}。
             把文字轉成 JSON。
@@ -77,9 +81,9 @@ class ConfidenceEngine:
             ],
             response_format={"type": "json_object"}
         )
-        
+
         raw_data = json.loads(resp.choices[0].message.content)
-        
+
         # 1. 處理中文 Key 的對應
         mapping = {"地點": "place", "城市": "city", "時間": "hhmm", "日期": "date", "星期": "weekday", "別名": "place_variants"}
         processed_data = {}
@@ -87,7 +91,7 @@ class ConfidenceEngine:
             new_key = mapping.get(k, k)
             processed_data[new_key] = v
 
-        # 2. 【核心修正】只留下 CrowdQuery 定義過的欄位，過濾掉「地點」等不認識的參數
+        # 2. 只留下 CrowdQuery 定義過的欄位
         allowed_names = {f.name for f in fields(CrowdQuery)}
         final_init_data = {k: v for k, v in processed_data.items() if k in allowed_names}
 
@@ -99,9 +103,12 @@ class ConfidenceEngine:
                 final_init_data["radius_m"] = None
 
         # 3. 補足必填缺失值
-        if "city" not in final_init_data: final_init_data["city"] = default_city
-        if "place_variants" not in final_init_data: final_init_data["place_variants"] = [final_init_data.get("place", "")]
-        if "hhmm" not in final_init_data: final_init_data["hhmm"] = "12:00"
+        if "city" not in final_init_data:
+            final_init_data["city"] = default_city
+        if "place_variants" not in final_init_data:
+            final_init_data["place_variants"] = [final_init_data.get("place", "")]
+        if "hhmm" not in final_init_data:
+            final_init_data["hhmm"] = "12:00"
 
         return CrowdQuery(**final_init_data)
 
@@ -111,34 +118,44 @@ class ConfidenceEngine:
         best_score = (-1.0, -1.0)
         lat_min, lng_min, lat_max, lng_max = city_bounds
 
-        # 如果 place_variants 是空的，就用 place
         search_list = q.place_variants if q.place_variants else [q.place]
 
         for v in search_list:
-            params = {"q": v, "format": "json", "countrycodes": "jp", "viewbox": f"{lng_min},{lat_max},{lng_max},{lat_min}", "bounded": 1}
+            params = {
+                "q": v, "format": "json", "countrycodes": "jp",
+                "viewbox": f"{lng_min},{lat_max},{lng_max},{lat_min}",
+                "bounded": 1
+            }
             try:
-                r = requests.get("https://nominatim.openstreetmap.org/search", params=params, headers={"User-Agent": "crowd-demo/1.0"}, timeout=5)
+                r = requests.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params=params,
+                    headers={"User-Agent": "crowd-demo/1.0"},
+                    timeout=5
+                )
                 results = r.json()
             except:
                 continue
-            
+
             for it in results:
                 lat, lng = float(it["lat"]), float(it["lon"])
-                if not (lat_min <= lat <= lat_max and lng_min <= lng <= lng_max): continue
-                
+                if not (lat_min <= lat <= lat_max and lng_min <= lng <= lng_max):
+                    continue
+
                 sim = similarity(q.place, best_label(it))
                 imp = float(it.get("importance") or 0.0)
                 if (sim, imp) > best_score:
                     best_score = (sim, imp)
                     best_overall = it
 
-        if not best_overall: return None
-        
+        if not best_overall:
+            return None
+
         lat_found, lng_found = float(best_overall["lat"]), float(best_overall["lon"])
         _, idx = self.tree.query([lat_found, lng_found])
-        
+
         print(f"✓ 定位成功: {best_overall.get('display_name')[:30]}... 經緯度: ({lat_found:.4f}, {lng_found:.4f})")
-        
+
         return int(self.grid_xy_lookup.loc[idx, "x"]), int(self.grid_xy_lookup.loc[idx, "y"])
 
     def calculate_circles(self, q: CrowdQuery, x0, y0, coverages=(0.5, 0.8, 0.95)):
@@ -146,15 +163,23 @@ class ConfidenceEngine:
 
         t_slot = self.time_to_slot(q.hhmm)
 
-        # --- 選擇對應 weekday 的 d ---
+        # --- ✅ 修正：用 START_DATE + d 推真實 weekday（0=Sun..6=Sat）---
         tmp_days = self.df_pred[["d"]].drop_duplicates().copy()
-        tmp_days["weekday"] = (tmp_days["d"] % 7)
+
+        # date = START_DATE + d days
+        tmp_days["date"] = tmp_days["d"].apply(lambda dd: START_DATE + datetime.timedelta(days=int(dd)))
+
+        # Python weekday(): Mon=0..Sun=6
+        py_wd = tmp_days["date"].apply(lambda dt: dt.weekday())
+
+        # 轉成 LLM 規則：Sun=0..Sat=6
+        tmp_days["weekday"] = py_wd.apply(lambda w: (w + 1) % 7)
 
         target_weekday = q.weekday if q.weekday is not None else 0
         cand_days = tmp_days[tmp_days["weekday"] == target_weekday]["d"].tolist()
 
         if not cand_days:
-            raise ValueError("找不到對應 weekday 的資料日 d")
+            raise ValueError("找不到對應 weekday 的資料日 d（請檢查 START_DATE 是否正確）")
 
         d_use = int(cand_days[-1])  # 用最後一天
 

@@ -44,16 +44,21 @@ def prepare_base_df(parquet_path, remove_sentinel=True):
     return df
 
 def add_lags_and_rollings(df, seq_len, start_date="2023-01-01"):
-    # weekday/is_weekend（你如果有更準的 d->date 對照，就改這裡）
+    # date
     df["date"] = pd.to_datetime(start_date) + pd.to_timedelta(df["d"], unit="D")
-    df["weekday"] = df["date"].dt.weekday
-    df["is_weekend"] = (df["weekday"] >= 5).astype(int)
 
-    df = df.sort_values(["x","y","t","d"]).reset_index(drop=True)
-    g = df.groupby(["x","y","t"])["count"]
+    # ✅ 改這裡：轉成 0=週日 ... 6=週六（對齊 LLM/ConfidenceEngine）
+    # pandas dt.weekday: 0=Mon..6=Sun
+    df["weekday"] = (df["date"].dt.weekday + 1) % 7
 
-    # LSTM 用：lag_1..lag_seq_len
-    for k in range(1, seq_len+1):
+    # ✅ 週末：週六(6) / 週日(0)
+    df["is_weekend"] = df["weekday"].isin([0, 6]).astype(int)
+
+    df = df.sort_values(["x", "y", "t", "d"]).reset_index(drop=True)
+    g = df.groupby(["x", "y", "t"])["count"]
+
+    # LSTM/ConvLSTM 用：lag_1..lag_seq_len
+    for k in range(1, seq_len + 1):
         df[f"lag_{k}"] = g.shift(k)
 
     return df
