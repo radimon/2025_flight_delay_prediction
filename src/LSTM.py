@@ -10,7 +10,7 @@ class SeqDatasetEmbed(Dataset):
         self.seq_len = seq_len
         # 序列：lag_seq_len ... lag_1（越後面越接近現在）
         lag_cols = [f"lag_{k}" for k in range(seq_len, 0, -1)]
-        self.X_seq = df[lag_cols].to_numpy(dtype=np.float32)[:, :, None]  # (N,L,1)
+        self.X_seq = df[lag_cols].to_numpy(dtype=np.float32, copy=True)[:, :, None]  # (N,L,1)
 
         # ids
         self.weekday = df['weekday'].to_numpy(dtype=np.int64)
@@ -124,9 +124,9 @@ def train_lstm_embed(model, train_df, val_df, seq_len,
         preds, ys = [], []
         with torch.no_grad():
             for xseq, wd, tid, xid, yid, isw, base_log, y in dl_va:
-                xseq, wd, tid, xid, yid, isw, base_log = (
+                xseq, wd, tid, xid, yid, isw, base_log, y = (
                     xseq.to(device), wd.to(device), tid.to(device), xid.to(device),
-                    yid.to(device), isw.to(device), base_log.to(device)
+                    yid.to(device), isw.to(device), base_log.to(device), y.to(device)
                 )
                 pred_log = model(xseq, wd, tid, xid, yid, isw)
 

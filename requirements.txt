@@ -12,3 +12,4 @@ lightgbm
 openai
 torch
 dotenv
+holiday

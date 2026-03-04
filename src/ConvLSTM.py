@@ -28,11 +28,12 @@ def _infer_bounds(df: pd.DataFrame) -> Dict[str, int]:
     }
 
 
-def build_dense_cube(
+def build_dense_cube_with_mask(
     df: pd.DataFrame,
     *,
     use_log1p: bool = True,
     dtype: np.dtype = np.float16,
+    value_dtype: np.dtype = np.float16,
     bounds: Optional[Dict[str, int]] = None,
 ) -> Tuple[np.ndarray, Dict[str, int]]:
     """
@@ -44,7 +45,8 @@ def build_dense_cube(
     where indices are shifted to compact ranges using bounds.
 
     Returns:
-        cube: (D, T, H, W)
+        cube_val : (D,T,H,W)  float16/float32, storing log1p(count) (default)
+        cube_msk : (D,T,H,W)  uint8, 1 if (d,t,x,y) exists in df, else 0
         meta: dict with shifts and sizes:
               d_min, x_min, y_min, D, T, H, W
     """
@@ -61,7 +63,8 @@ def build_dense_cube(
     H = x_max - x_min + 1
     W = y_max - y_min + 1
 
-    cube = np.zeros((D, T, H, W), dtype=dtype)
+    cube_val = np.zeros((D, T, H, W), dtype=value_dtype)
+    cube_msk = np.zeros((D, T, H, W), dtype=np.uint8)
 
     d = (df["d"].to_numpy(np.int64) - d_min)
     t = (df["t"].to_numpy(np.int64) - t_min)
@@ -75,7 +78,10 @@ def build_dense_cube(
     ok = (d >= 0) & (d < D) & (t >= 0) & (t < T) & (x >= 0) & (x < H) & (y >= 0) & (y < W)
     d, t, x, y, v = d[ok], t[ok], x[ok], y[ok], v[ok]
 
-    np.add.at(cube, (d, t, x, y), v.astype(dtype, copy=False))
+    # value: accumulate (safe for duplicates)
+    np.add.at(cube_val, (d, t, x, y), v.astype(value_dtype, copy=False))
+    # mask: mark existence (1)
+    np.maximum.at(cube_msk, (d, t, x, y), 1)
 
     meta = {
         "d_min": d_min,
@@ -88,7 +94,7 @@ def build_dense_cube(
         "W": W,
         "dtype": str(np.dtype(dtype)),
     }
-    return cube, meta
+    return cube_val, cube_msk, meta
 
 
 def extract_patch_from_frame(frame_hw: np.ndarray, x: int, y: int, radius: int) -> np.ndarray:
@@ -111,7 +117,24 @@ def extract_patch_from_frame(frame_hw: np.ndarray, x: int, y: int, radius: int) 
     patch[px0:px0 + (xs1 - xs0), py0:py0 + (ys1 - ys0)] = frame_hw[xs0:xs1, ys0:ys1]
     return patch
 
+def build_freq_map_from_priors(pri: pd.DataFrame, meta: dict) -> np.ndarray:
+    """
+    pri must have columns: t,x,y,freq_nz (t/x/y 用原始 global id)
+    returns freq_map[t_idx, x_idx, y_idx] in [0,1]
+    """
+    t_min, x_min, y_min = meta["t_min"], meta["x_min"], meta["y_min"]
+    T, H, W = meta["T"], meta["H"], meta["W"]
 
+    freq_map = np.zeros((T, H, W), dtype=np.float32)
+
+    # pri 可能很大，用 itertuples 比 iterrows 快
+    for r in pri.itertuples(index=False):
+        ti = int(r.t) - t_min
+        xi = int(r.x) - x_min
+        yi = int(r.y) - y_min
+        if 0 <= ti < T and 0 <= xi < H and 0 <= yi < W:
+            freq_map[ti, xi, yi] = float(r.freq_nz)
+    return freq_map
 # -------------------------
 # Dataset: patch sequence + embeddings
 # -------------------------
@@ -124,12 +147,14 @@ class SeqPatchDatasetEmbed(Dataset):
         (x_seq, weekday, t_id, x_id, y_id, is_weekend(1,), base_log(1,), y)
     """
     def __init__(self, df: pd.DataFrame, seq_len: int, patch_radius: int,
-                 cube: np.ndarray, meta: Dict[str, int]):
+                 cube_val, cube_msk, meta: Dict[str, int], w_nonzero: float = 0.0):
         self.df = df.reset_index(drop=True)
         self.seq_len = int(seq_len)
         self.patch_radius = int(patch_radius)
-        self.cube = cube
+        self.cube_val = cube_val
+        self.cube_msk = cube_msk
         self.meta = meta
+        self.w_nonzero = float(w_nonzero)
 
         self.d = self.df["d"].to_numpy(np.int64)
         self.t = self.df["t"].to_numpy(np.int64)
@@ -145,6 +170,7 @@ class SeqPatchDatasetEmbed(Dataset):
 
         # target：若有 y_target 就用（residual learning），否則維持原本 log1p(count)
         self.base_log = self.df["base_log"].to_numpy(np.float32) if "base_log" in self.df.columns else None
+        self.count = self.df["count"].to_numpy(np.float32)  # 用來算 weight（關鍵）
 
         if "y_target" in self.df.columns:
             self.target = self.df["y_target"].to_numpy(np.float32)
@@ -166,19 +192,28 @@ class SeqPatchDatasetEmbed(Dataset):
         r = self.patch_radius
         K = 2 * r + 1
 
-        x_seq = np.zeros((L, 1, K, K), dtype=np.float32)  # float32 to model
+        # x_seq: (L, 2, K, K)  channel0=value, channel1=mask
+        x_seq = np.zeros((L, 2, K, K), dtype=np.float32)  # float32 to model
 
         for j, k in enumerate(range(L, 0, -1)):
             d_lag = d0 - k
-            if d_lag < 0 or d_lag >= self.cube.shape[0]:
+            if d_lag < 0 or d_lag >= self.cube_val.shape[0]:
                 continue
-            if t0 < 0 or t0 >= self.cube.shape[1]:
+            if t0 < 0 or t0 >= self.cube_val.shape[1]:
                 continue
-            frame = self.cube[d_lag, t0].astype(np.float32, copy=False)  # (H,W)
-            if 0 <= x0 < frame.shape[0] and 0 <= y0 < frame.shape[1]:
-                x_seq[j, 0] = extract_patch_from_frame(frame, x0, y0, r)
+            
+            frame_val = self.cube_val[d_lag, t0].astype(np.float32, copy=False)
+            frame_msk = self.cube_msk[d_lag, t0].astype(np.float32, copy=False)
+
+            if 0 <= x0 < frame_val.shape[0] and 0 <= y0 < frame_val.shape[1]:
+                x_seq[j, 0] = extract_patch_from_frame(frame_val, x0, y0, r)
+                x_seq[j, 1] = extract_patch_from_frame(frame_msk, x0, y0, r)
 
         base_log_i = 0.0 if self.base_log is None else float(self.base_log[i])
+
+        # loss weight：非零上權重（最簡單也最有效）
+        is_nz = 1.0 if self.count[i] > 0 else 0.0
+        w = 1.0 + self.w_nonzero * is_nz
 
         return (
             torch.from_numpy(x_seq),
@@ -188,6 +223,7 @@ class SeqPatchDatasetEmbed(Dataset):
             torch.tensor(self.y_id[i], dtype=torch.long),
             torch.tensor([self.is_weekend[i]], dtype=torch.float32),
             torch.tensor([base_log_i], dtype=torch.float32),
+            torch.tensor([w], dtype=torch.float32), 
             torch.tensor(self.target[i], dtype=torch.float32),
         )
 
@@ -221,9 +257,9 @@ class ConvLSTMCell(nn.Module):
 
 class ConvLSTMEncoder(nn.Module):
     """Single-layer ConvLSTM encoder: x_seq (B,L,1,K,K) -> last hidden map (B,Hid,K,K)."""
-    def __init__(self, hid_ch: int = 32, kernel_size: int = 3):
+    def __init__(self, in_ch:int = 2, hid_ch: int = 32, kernel_size: int = 3):
         super().__init__()
-        self.cell = ConvLSTMCell(in_ch=1, hid_ch=hid_ch, kernel_size=kernel_size)
+        self.cell = ConvLSTMCell(in_ch=in_ch, hid_ch=hid_ch, kernel_size=kernel_size)
 
     def forward(self, x_seq):
         h, c = None, None
@@ -246,7 +282,7 @@ class ConvLSTMRegEmbed(nn.Module):
                  emb_wd: int = 2, emb_t: int = 8, emb_x: int = 16, emb_y: int = 16,
                  mlp: int = 128):
         super().__init__()
-        self.encoder = ConvLSTMEncoder(hid_ch=hid_ch, kernel_size=kernel_size)
+        self.encoder = ConvLSTMEncoder(in_ch=2, hid_ch=hid_ch, kernel_size=kernel_size)
 
         self.emb_weekday = nn.Embedding(n_weekday, emb_wd)
         self.emb_t = nn.Embedding(n_t, emb_t)
@@ -300,6 +336,9 @@ def train_convlstm_embed(
     lookup_df: Optional[pd.DataFrame] = None,
     cube_dtype: np.dtype = np.float16,
     cube_bounds: Optional[Dict[str, int]] = None,
+    neg_ratio: float = 1.0,     # 0:positive 比例，例如 2 代表 0 取到 2x positive
+    w_nonzero: float = 3.0,     # 非零樣本 loss 權重增量
+    freq_prior_df: Optional[pd.DataFrame] = None
 ):
     torch.manual_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -307,33 +346,61 @@ def train_convlstm_embed(
     if lookup_df is None:
         lookup_df = pd.concat([train_df, val_df], ignore_index=True)
 
-    cube, meta = build_dense_cube(
+    cube_val, cube_msk, meta = build_dense_cube_with_mask(
         lookup_df[["d", "t", "x", "y", "count"]],
         use_log1p=True,
-        dtype=cube_dtype,
+        value_dtype=cube_dtype,
         bounds=cube_bounds,
     )
 
-    tr = train_df.sample(n=min(sample_n, len(train_df)), random_state=seed).reset_index(drop=True)
+    if freq_prior_df is not None:
+        # 只需要 t,x,y,freq_nz
+        pri_for_map = freq_prior_df[["t","x","y","freq_nz"]].dropna()
+        freq_map = build_freq_map_from_priors(pri_for_map, meta)     # (T,H,W)
+        cube_msk = cube_msk.astype(np.float32) * freq_map[None, ...] # (D,T,H,W)
 
-    ds_tr = SeqPatchDatasetEmbed(tr, seq_len=seq_len, patch_radius=patch_radius, cube=cube, meta=meta)
-    ds_va = SeqPatchDatasetEmbed(val_df, seq_len=seq_len, patch_radius=patch_radius, cube=cube, meta=meta)
+    # -------- 負樣本抽樣（train only）--------
+    df = train_df
+    pos = df[df["count"] > 0]
+    neg = df[df["count"] == 0]
+
+    target_total = min(sample_n, len(df))
+    if len(pos) == 0:
+        tr = df.sample(n=target_total, random_state=seed)
+    else:
+        pos_n = min(len(pos), max(1, int(target_total / (1.0 + neg_ratio))))
+        neg_n = min(len(neg), target_total - pos_n)
+
+        tr_pos = pos.sample(n=pos_n, random_state=seed)
+        tr_neg = neg.sample(n=neg_n, random_state=seed) if neg_n > 0 else neg.head(0)
+        tr = pd.concat([tr_pos, tr_neg], ignore_index=True).sample(frac=1, random_state=seed)
+
+    tr = tr.reset_index(drop=True)
+
+    ds_tr = SeqPatchDatasetEmbed(tr, seq_len=seq_len, patch_radius=patch_radius,
+                                 cube_val=cube_val, cube_msk=cube_msk, meta=meta, w_nonzero=w_nonzero)
+    ds_va = SeqPatchDatasetEmbed(val_df, seq_len=seq_len, patch_radius=patch_radius,
+                                 cube_val=cube_val, cube_msk=cube_msk, meta=meta, w_nonzero=0.0)
 
     dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
     dl_va = DataLoader(ds_va, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
     model = model.to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = nn.SmoothL1Loss(beta=huber_beta) if loss == "huber" else nn.MSELoss()
+
+    if loss == "huber":
+        loss_fn = nn.SmoothL1Loss(beta=huber_beta, reduction="none")  
+    else: 
+        loss_fn = nn.MSELoss(reduction="none")
 
     best_rmse = float("inf")
     best_state = None
-    patience, bad = 3, 0
+    patience, bad = 7, 0
 
     for ep in range(1, epochs + 1):
         model.train()
-        for xseq, wd, tid, xid, yid, isw, base_log, y in dl_tr:
-            xseq, wd, tid, xid, yid, isw, base_log, y = (
+        for xseq, wd, tid, xid, yid, isw, base_log, w, y in dl_tr:
+            xseq, wd, tid, xid, yid, isw, base_log, w, y = (
                 xseq.to(device, non_blocking=True),
                 wd.to(device, non_blocking=True),
                 tid.to(device, non_blocking=True),
@@ -341,18 +408,22 @@ def train_convlstm_embed(
                 yid.to(device, non_blocking=True),
                 isw.to(device, non_blocking=True),
                 base_log.to(device, non_blocking=True),
+                w.to(device, non_blocking=True).squeeze(1),
                 y.to(device, non_blocking=True),
             )
             pred = model(xseq, wd, tid, xid, yid, isw)
-            l = loss_fn(pred, y)
+            per = loss_fn(pred, y)                             # (B,)
+            l = (per * w).mean()   
+
             opt.zero_grad()
             l.backward()
             opt.step()
 
+        # -------- val RMSE（還原到 count）--------
         model.eval()
         preds, ys = [], []
         with torch.no_grad():
-            for xseq, wd, tid, xid, yid, isw, base_log, y in dl_va:
+            for xseq, wd, tid, xid, yid, isw, base_log, _w, y in dl_va:
                 xseq, wd, tid, xid, yid, isw, base_log, y = (
                     xseq.to(device, non_blocking=True),
                     wd.to(device, non_blocking=True),
@@ -360,20 +431,18 @@ def train_convlstm_embed(
                     xid.to(device, non_blocking=True),
                     yid.to(device, non_blocking=True),
                     isw.to(device, non_blocking=True),
-                    base_log.to(device, non_blocking=True),
+                    base_log.to(device, non_blocking=True).squeeze(1),
                     y.to(device, non_blocking=True),
                 )
                 pred_log = model(xseq, wd, tid, xid, yid, isw)
                 if use_residual:
-                    base = base_log.squeeze(1)
-                    pred_log_full = pred_log + base
-                    y_log_full = y + base
+                    pred_log = pred_log + base_log
+                    y_log = y + base_log
                 else:
-                    pred_log_full = pred_log
-                    y_log_full = y
+                    y_log = y
 
-                preds.append(torch.expm1(pred_log_full).cpu().numpy())
-                ys.append(torch.expm1(y_log_full).cpu().numpy())
+                preds.append(torch.expm1(pred_log).cpu().numpy())
+                ys.append(torch.expm1(y_log).cpu().numpy())
 
         yhat = np.concatenate(preds)
         ytrue = np.concatenate(ys)
@@ -407,26 +476,34 @@ def predict_convlstm_embed(
     lookup_df: Optional[pd.DataFrame] = None,
     cube_dtype: np.dtype = np.float16,
     cube_bounds: Optional[Dict[str, int]] = None,
+    freq_prior_df: Optional[pd.DataFrame] = None
 ):
     device = next(model.parameters()).device
 
     if lookup_df is None:
         lookup_df = df_split
 
-    cube, meta = build_dense_cube(
+    cube_val, cube_msk, meta = build_dense_cube_with_mask(
         lookup_df[["d", "t", "x", "y", "count"]],
         use_log1p=True,
-        dtype=cube_dtype,
+        value_dtype=cube_dtype,
         bounds=cube_bounds,
     )
 
-    ds = SeqPatchDatasetEmbed(df_split, seq_len=seq_len, patch_radius=patch_radius, cube=cube, meta=meta)
+    if freq_prior_df is not None:
+        # 只需要 t,x,y,freq_nz
+        pri_for_map = freq_prior_df[["t","x","y","freq_nz"]].dropna()
+        freq_map = build_freq_map_from_priors(pri_for_map, meta)     # (T,H,W)
+        cube_msk = cube_msk.astype(np.float32) * freq_map[None, ...] # (D,T,H,W)
+
+    ds = SeqPatchDatasetEmbed(df_split, seq_len=seq_len, patch_radius=patch_radius,
+                              cube_val=cube_val, cube_msk=cube_msk, meta=meta, w_nonzero=0.0)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
     model.eval()
     preds = []
     with torch.no_grad():
-        for xseq, wd, tid, xid, yid, isw, base_log, _y in dl:
+        for xseq, wd, tid, xid, yid, isw, base_log, _w, _y in dl:
             xseq, wd, tid, xid, yid, isw, base_log = (
                 xseq.to(device, non_blocking=True),
                 wd.to(device, non_blocking=True),

@@ -29,7 +29,7 @@ def main():
     df_raw = prepare_base_df(PARQUET_PATH, remove_sentinel=True)
 
     if REBUILD_DATA:
-        df_true = densify_topk_series(df_raw, top_k=500000) # 對raw data進行補零
+        df_true = densify_topk_series(df_raw, top_k=20000) # 對raw data進行補零
         save_filled_zero_data(df_true, SAVED_FILLED_ZERO_DATA_PATH)
     else:
         df_true = pd.read_parquet(SAVED_FILLED_ZERO_DATA_PATH).copy()
