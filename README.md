@@ -21,6 +21,11 @@ python --version
 ```bash
 python -m pip install -r requirements.txt
 ```
+for venv
+```bash
+.\venv312\Scripts\python.exe -m pip install --upgrade pip
+.\venv312\Scripts\python.exe -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
 
 ## Data
 data/raw/CityC_Sapporo.csv
