@@ -9,6 +9,7 @@ from sklearn.metrics import root_mean_squared_error
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from torch.amp import grad_scaler
 
 
 # -------------------------
@@ -191,23 +192,31 @@ class SeqPatchDatasetEmbed(Dataset):
         L = self.seq_len
         r = self.patch_radius
         K = 2 * r + 1
+        D_cube, _, H_cube, W_cube = self.cube_val.shape
 
         # x_seq: (L, 2, K, K)  channel0=value, channel1=mask
         x_seq = np.zeros((L, 2, K, K), dtype=np.float32)  # float32 to model
 
-        for j, k in enumerate(range(L, 0, -1)):
-            d_lag = d0 - k
-            if d_lag < 0 or d_lag >= self.cube_val.shape[0]:
-                continue
-            if t0 < 0 or t0 >= self.cube_val.shape[1]:
-                continue
-            
-            frame_val = self.cube_val[d_lag, t0].astype(np.float32, copy=False)
-            frame_msk = self.cube_msk[d_lag, t0].astype(np.float32, copy=False)
+        # 邊界 clamp（只算一次）
+        xs0c = max(x0 - r, 0);  xs1c = min(x0 + r + 1, H_cube)
+        ys0c = max(y0 - r, 0);  ys1c = min(y0 + r + 1, W_cube)
+        px0  = xs0c - (x0 - r)
+        py0  = ys0c - (y0 - r)
+        ph   = xs1c - xs0c
+        pw   = ys1c - ys0c
 
-            if 0 <= x0 < frame_val.shape[0] and 0 <= y0 < frame_val.shape[1]:
-                x_seq[j, 0] = extract_patch_from_frame(frame_val, x0, y0, r)
-                x_seq[j, 1] = extract_patch_from_frame(frame_msk, x0, y0, r)
+        if t0 < 0 or t0 >= self.cube_val.shape[1] or ph <= 0 or pw <= 0:
+            pass  # x_seq 留全零
+        else:
+            for j, k in enumerate(range(L, 0, -1)):
+                d_lag = d0 - k
+                if d_lag < 0 or d_lag >= D_cube:
+                    continue
+                # 直接切片：cube_val 已是 float16/32，cube_msk 已是 float32
+                raw_v = self.cube_val[d_lag, t0, xs0c:xs1c, ys0c:ys1c]
+                raw_m = self.cube_msk[d_lag, t0, xs0c:xs1c, ys0c:ys1c]
+                x_seq[j, 0, px0:px0+ph, py0:py0+pw] = raw_v  # numpy 自動升型
+                x_seq[j, 1, px0:px0+ph, py0:py0+pw] = raw_m
 
         base_log_i = 0.0 if self.base_log is None else float(self.base_log[i])
 
@@ -329,6 +338,7 @@ def train_convlstm_embed(
     batch_size: int = 256,
     epochs: int = 20,
     lr: float = 1e-3,
+    weight_decay: float = 1e-4,
     seed: int = 42,
     loss: str = "mse",
     huber_beta: float = 1.0,
@@ -382,23 +392,47 @@ def train_convlstm_embed(
     ds_va = SeqPatchDatasetEmbed(val_df, seq_len=seq_len, patch_radius=patch_radius,
                                  cube_val=cube_val, cube_msk=cube_msk, meta=meta, w_nonzero=0.0)
 
-    dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
-    dl_va = DataLoader(ds_va, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
+    _nw = min(4, __import__('os').cpu_count() or 1)
+    _mp_ctx = "fork" if __import__('sys').platform != "win32" else "spawn"
+    dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True, 
+                       num_workers=_nw, pin_memory=True, persistent_workers=True,
+                       prefetch_factor=2, multiprocessing_context=_mp_ctx)
+    dl_va = DataLoader(ds_va, batch_size=batch_size, shuffle=False, 
+                       num_workers=_nw, pin_memory=True, persistent_workers=True,
+                       prefetch_factor=2, multiprocessing_context=_mp_ctx)
 
     model = model.to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # AMP（Automatic Mixed Precision）
+    _use_amp = device.type == "cuda"
+    _scaler  = torch.amp.GradScaler("cuda", enabled=_use_amp)
+
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay) #優化器
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        opt, mode='min', factor=0.5, patience=4, min_lr=1e-5)
 
     if loss == "huber":
         loss_fn = nn.SmoothL1Loss(beta=huber_beta, reduction="none")  
     else: 
         loss_fn = nn.MSELoss(reduction="none")
 
-    best_rmse = float("inf")
+    # early stop 
+    best_val_loss = float("inf")
     best_state = None
-    patience, bad = 7, 0
+    patience, bad = 10, 0
+    min_delta = 0.0 
+
+    # history for diagnosing overfitting
+    train_loss_hist: list[float] = []
+    train_loss_unw_hist: list[float] = []
+    val_loss_hist: list[float] = []
+    val_rmse_hist: list[float] = []
 
     for ep in range(1, epochs + 1):
         model.train()
+        epoch_train_loss = 0.0
+        epoch_train_loss_unw = 0.0
+        n_train = 0
         for xseq, wd, tid, xid, yid, isw, base_log, w, y in dl_tr:
             xseq, wd, tid, xid, yid, isw, base_log, w, y = (
                 xseq.to(device, non_blocking=True),
@@ -411,16 +445,39 @@ def train_convlstm_embed(
                 w.to(device, non_blocking=True).squeeze(1),
                 y.to(device, non_blocking=True),
             )
-            pred = model(xseq, wd, tid, xid, yid, isw)
-            per = loss_fn(pred, y)                             # (B,)
-            l = (per * w).mean()   
+            with torch.autocast(device_type=device.type, enabled=_use_amp):
+                pred = model(xseq, wd, tid, xid, yid, isw)
 
-            opt.zero_grad()
-            l.backward()
-            opt.step()
+            # ---F1: zero/nonzero binary classification ---
+            # 先還原到「log1p(count)」空間再判斷 >0
+            if use_residual:
+                base_log_ = base_log.squeeze(1) if base_log.dim() == 2 else base_log
+                pred_log_total = pred + base_log_
+                y_log_total = y + base_log_
+            else:
+                pred_log_total = pred
+                y_log_total = y
 
+            with torch.autocast(device_type=device.type, enabled=_use_amp):
+                per = loss_fn(pred, y)              # (B,) — element-wise
+                l   = (per * w).mean()              # weighted loss 
+
+            opt.zero_grad(set_to_none=True)         # set_to_none=True 比 zero_grad() 快
+            _scaler.scale(l).backward()
+            _scaler.step(opt)
+            _scaler.update()
+
+            epoch_train_loss += float(l.item()) * xseq.size(0)
+            epoch_train_loss_unw += float(per.mean().item()) * xseq.size(0)
+            n_train += xseq.size(0)
+
+        avg_train_loss = epoch_train_loss / max(1, n_train)
+        avg_train_loss_unw = epoch_train_loss_unw / max(1, n_train)
         # -------- val RMSE（還原到 count）--------
         model.eval()
+        epoch_val_loss = 0.0
+        val_tp = val_fp = val_fn = 0 
+        n_val = 0
         preds, ys = [], []
         with torch.no_grad():
             for xseq, wd, tid, xid, yid, isw, base_log, _w, y in dl_va:
@@ -435,22 +492,42 @@ def train_convlstm_embed(
                     y.to(device, non_blocking=True),
                 )
                 pred_log = model(xseq, wd, tid, xid, yid, isw)
-                if use_residual:
-                    pred_log = pred_log + base_log
-                    y_log = y + base_log
-                else:
-                    y_log = y
 
-                preds.append(torch.expm1(pred_log).cpu().numpy())
-                ys.append(torch.expm1(y_log).cpu().numpy())
+                # val loss in the same space as training target (log-space or residual log-space)
+                per_val = loss_fn(pred_log, y)
+                epoch_val_loss += float(per_val.mean().item()) * xseq.size(0)
+                n_val += xseq.size(0)
+
+                # 轉回「原始 log1p(count)」空間：用來算RMSE
+                if use_residual:
+                    pred_log_total = pred_log + base_log
+                    y_log_total = y + base_log
+                else:
+                    pred_log_total = pred_log
+                    y_log_total = y
+
+                # RMSE
+                preds.append(torch.expm1(pred_log_total).cpu().numpy())
+                ys.append(torch.expm1(y_log_total).cpu().numpy())
 
         yhat = np.concatenate(preds)
         ytrue = np.concatenate(ys)
         rmse = float(root_mean_squared_error(ytrue, yhat))
-        print(f"epoch {ep}: val RMSE={rmse:.4f}")
 
-        if rmse < best_rmse - 1e-4:
-            best_rmse = rmse
+        avg_val_loss = epoch_val_loss / max(1, n_val) #把同val中所有batch的loss平均
+
+        train_loss_hist.append(avg_train_loss)
+        train_loss_unw_hist.append(avg_train_loss_unw)
+        val_loss_hist.append(avg_val_loss)
+        val_rmse_hist.append(rmse)
+
+        print(f"epoch {ep} - loss: {avg_train_loss:.6f} - loss_unw: {avg_train_loss_unw:.6f} "
+              f"- val_loss: {avg_val_loss:.6f} "
+              f"- val_rmse: {rmse:.4f}")
+        scheduler.step(avg_val_loss)
+
+        if avg_val_loss < best_val_loss - min_delta:
+            best_val_loss = avg_val_loss
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             bad = 0
         else:
@@ -461,6 +538,14 @@ def train_convlstm_embed(
 
     if best_state is not None:
         model.load_state_dict(best_state)
+
+    # attach history for plotting train/val curves
+    model._history = {
+        "train_loss": train_loss_hist,
+        "train_loss_unw": train_loss_unw_hist,   
+        "val_loss": val_loss_hist,
+        "val_rmse": val_rmse_hist,
+    }
 
     model._cube_meta = meta  # optional
     return model
