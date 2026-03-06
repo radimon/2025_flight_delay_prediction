@@ -19,7 +19,20 @@ python --version
 
 ## Install Dependencies
 ```bash
-python -m pip install -r requirements.txt
+# run inside vscode cmd not powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process #在window powershell跑
+
+rmdir /s /q venv312
+
+py -3.12 -m venv venv312
+
+venv312\Scripts\activate.bat
+
+py -m pip install --upgrade pip
+
+.\venv312\Scripts\python.exe -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 #已經載過就不用載了
+
+pip install -r requirements.txt
 ```
 
 ## Data
