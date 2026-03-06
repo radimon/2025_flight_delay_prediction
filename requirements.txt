@@ -13,3 +13,4 @@ openai
 torch
 dotenv
 holiday
+ipykernel
