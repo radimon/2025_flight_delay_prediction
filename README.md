@@ -26,13 +26,15 @@ rmdir /s /q venv312
 
 py -3.12 -m venv venv312
 
-venv312\Scripts\activate.bat
+venv312\Scripts\activate.bat #啟用venv
 
 py -m pip install --upgrade pip
 
 .\venv312\Scripts\python.exe -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 #已經載過就不用載了
 
 pip install -r requirements.txt
+
+py main.py
 ```
 
 ## Data

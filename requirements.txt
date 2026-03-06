@@ -12,5 +12,7 @@ lightgbm
 openai
 torch
 dotenv
-holiday
+holidays
 ipykernel
+polyline
+requests
