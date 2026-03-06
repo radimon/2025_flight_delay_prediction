@@ -208,15 +208,31 @@ class SeqPatchDatasetEmbed(Dataset):
         if t0 < 0 or t0 >= self.cube_val.shape[1] or ph <= 0 or pw <= 0:
             pass  # x_seq 留全零
         else:
-            for j, k in enumerate(range(L, 0, -1)):
-                d_lag = d0 - k
+            offsets = [
+                (0,-1),
+                (0,-2),
+                (0,-3),
+                (0,-4),
+                (0,-5),
+                (0,-6),
+                (-1,0),
+                (-7,0)
+            ]
+            for j,(d_shift,t_shift) in enumerate(offsets):
+                d_lag = d0 + d_shift
+                t_lag = t0 + t_shift
+
                 if d_lag < 0 or d_lag >= D_cube:
                     continue
-                # 直接切片：cube_val 已是 float16/32，cube_msk 已是 float32
-                raw_v = self.cube_val[d_lag, t0, xs0c:xs1c, ys0c:ys1c]
-                raw_m = self.cube_msk[d_lag, t0, xs0c:xs1c, ys0c:ys1c]
-                x_seq[j, 0, px0:px0+ph, py0:py0+pw] = raw_v  # numpy 自動升型
-                x_seq[j, 1, px0:px0+ph, py0:py0+pw] = raw_m
+
+                if t_lag < 0 or t_lag >= self.cube_val.shape[1]:
+                    continue
+
+                raw_v = self.cube_val[d_lag, t_lag, xs0c:xs1c, ys0c:ys1c]
+                raw_m = self.cube_msk[d_lag, t_lag, xs0c:xs1c, ys0c:ys1c]
+
+                x_seq[j,0,px0:px0+ph,py0:py0+pw] = raw_v
+                x_seq[j,1,px0:px0+ph,py0:py0+pw] = raw_m
 
         base_log_i = 0.0 if self.base_log is None else float(self.base_log[i])
 
@@ -394,12 +410,19 @@ def train_convlstm_embed(
 
     _nw = min(4, __import__('os').cpu_count() or 1)
     _mp_ctx = "fork" if __import__('sys').platform != "win32" else "spawn"
-    dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True, 
-                       num_workers=_nw, pin_memory=True, persistent_workers=True,
-                       prefetch_factor=2, multiprocessing_context=_mp_ctx)
-    dl_va = DataLoader(ds_va, batch_size=batch_size, shuffle=False, 
-                       num_workers=_nw, pin_memory=True, persistent_workers=True,
-                       prefetch_factor=2, multiprocessing_context=_mp_ctx)
+    dl_tr = DataLoader(
+        ds_tr,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0
+    )
+
+    dl_va = DataLoader(
+        ds_va,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0
+    )
 
     model = model.to(device)
 
