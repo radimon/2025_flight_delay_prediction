@@ -32,6 +32,20 @@ def haversine_m(lat1, lon1, lat2, lon2):
     a = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
     return float(2*R*np.arcsin(np.sqrt(a)))
 
+# 向量版
+def haversine_m_vec(lat1, lon1, lat2, lon2):
+    """
+    lat1, lon1: scalar or array
+    lat2, lon2: scalar or array
+    return: meters (numpy array)
+    """
+    R = 6371000.0
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
+    return 2 * R * np.arcsin(np.sqrt(a))
+
 def cell_size_m_at(mapper, x0, y0):
     """計算特定網格在現實世界中的約略尺寸"""
     # 建立目前網格、右方網格、上方網格的三個點
