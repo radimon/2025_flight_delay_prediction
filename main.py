@@ -129,7 +129,7 @@ def main():
     df_feat = add_lags_and_rollings(
         df_true.copy(),
         seq_len=seq_len,
-        start_date="2023-01-01"
+        start_date="2019-09-15"
     )
 
     need_cols = [f"lag_{k}" for k in range(1, seq_len + 1)]

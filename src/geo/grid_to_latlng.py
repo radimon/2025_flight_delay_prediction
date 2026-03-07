@@ -38,7 +38,7 @@ class GridLatLngMapper:
         lng = float(res.iloc[0]["lng"])
         return lat, lng
 
-    def latlng_to_grid(self, lat: float, lng: float) -> tuple[int, int]:
+    def latlng_to_grid(self, lat: float, lng: float, mode:str = 'int') -> tuple[int, int]:
         """
         反推 lat/lng -> grid
         利用兩個線性方程：
@@ -62,6 +62,9 @@ class GridLatLngMapper:
             # 退化情況用 least squares
             x, y = np.linalg.lstsq(A, b, rcond=None)[0]
 
+        if mode == 'float':
+            return float(x), float(y)
+        
         return int(round(x)), int(round(y))
 
 

@@ -410,6 +410,16 @@ def train_convlstm_embed(
 
     _nw = min(4, __import__('os').cpu_count() or 1)
     _mp_ctx = "fork" if __import__('sys').platform != "win32" else "spawn"
+
+    '''
+    dl_tr = DataLoader(ds_tr, batch_size=batch_size, shuffle=True, 
+                       num_workers=_nw, pin_memory=True, persistent_workers=True,
+                       prefetch_factor=2, multiprocessing_context=_mp_ctx)
+    dl_va = DataLoader(ds_va, batch_size=batch_size, shuffle=False, 
+                       num_workers=_nw, pin_memory=True, persistent_workers=True,
+                       prefetch_factor=2, multiprocessing_context=_mp_ctx)
+    '''
+
     dl_tr = DataLoader(
         ds_tr,
         batch_size=batch_size,
