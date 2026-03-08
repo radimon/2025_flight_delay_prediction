@@ -6,7 +6,7 @@ from src.geo.grid_to_latlng import GridLatLngMapper
 
 # 以預測人流給予格網市區分數(越高越像市區)
 def urban_score(df_pred:pd.DataFrame):
-    # df_pred 欄位: d, t, x, y, score, (count optional)
+    # df_pred 欄位: d, t, x, y, score
     df = df_pred.copy()
 
     # 型別保險
@@ -22,7 +22,8 @@ def urban_score(df_pred:pd.DataFrame):
                 n=("score","size")))
 
     # Min-Max normalization 
-    mn, mx = g["mean_score"].min(), g["mean_score"].max()
+    mn = g["mean_score"].quantile(0.02)
+    mx = g["mean_score"].quantile(0.98)
     eps = 1e-9
     g["urban_score"] = (g["mean_score"] - mn) / (mx - mn + eps)
 
@@ -138,7 +139,11 @@ def synthesize_parking_lots_from_poi(
         cap_lo, cap_hi = city_cap_range if is_city else suburb_cap_range
         return int(rng.integers(cap_lo, cap_hi + 1))
 
-    pois["capacity"] = pois.apply(sample_capacity_simple, axis=1)
+    # 缺值隨機補
+    pois["capacity"] = pois["capacity_osm"].where(
+        pois["capacity_osm"].notna(), 
+        other=pois.apply(sample_capacity_simple, axis=1)
+    )
 
     df_parks = pd.DataFrame({
         "park_id": pois["poi_id"].astype(str),
@@ -161,7 +166,7 @@ def synthesize_parking_lots_from_poi(
     return df_parks
 
 # 用區域特性、當天內時段加成與局部事件加成為每個格網計算出參數 a(人流車流轉換比)
-def build_a(df_pred, g, step_minutes=30,
+def build_a(df_pred, g, start_date:str,step_minutes=30,
             a_city=0.10, a_suburb=0.35, gamma=2.0,
             A_m=0.15, A_e=0.15, A_w=0.10,
             sig_m=1.0, sig_e=1.75, sig_w=4.0,
@@ -193,7 +198,7 @@ def build_a(df_pred, g, step_minutes=30,
     hour = df["t"].to_numpy() * (step_minutes / 60.0)
 
     # 週末判斷
-    df["date"] = pd.to_datetime("2019-09-15") + pd.to_timedelta(df["d"], unit="D")
+    df["date"] = pd.to_datetime(start_date) + pd.to_timedelta(df["d"], unit="D")
     df["weekday"] = df["date"].dt.weekday
     df["is_weekend"] = (df["weekday"] >= 5).astype(int)
     is_weekend = df["is_weekend"].to_numpy(dtype=float)
@@ -265,7 +270,7 @@ def build_parking_prob_baseline(
 
     px_all = parks["park_x"].to_numpy(dtype=float)
     py_all = parks["park_y"].to_numpy(dtype=float)
-    cap_all = parks["capacity"].to_numpy(dtype=float)
+    cap_all = parks["capacity"].to_numpy(dtype=float) # 每個停車場的容量，不隨時間變化
     n_parks = len(parks)
 
     # 對每一個格網先找出它附近會被考慮的停車場候選集合，然後用距離(+容量)算出這個格網的車流會選哪個停車場的機率分布 
@@ -301,38 +306,49 @@ def build_parking_prob_baseline(
         probs = attr / (attr.sum() + 1e-12)
         grid_records[gidx] = (cand_poss, probs.astype(float))
 
-    # 逐時間片(d,t)聚合 demand(每一個時間(d,t)下，計算每一個停車場周邊所有格網的車流需求加總(含距離權重)，得到該停車場的demand(park,d,t))
-    out_rows = []
-    # 用 groupby (d,t) 取出該時間所有 grid 的 car_demand 向量
-    for (d, t), sub in df.groupby(["d","t"], sort=False):
-        # 存每個停車場的 demand（用 park_pos 當索引）
-        demand_vec = np.zeros(n_parks, dtype=float)
+    # 每個格網分配到各停車場的機率矩陣 W (n_grids × n_parks) 
+    n_grids = len(grid_xy)
+    W = np.zeros((n_grids, n_parks), dtype=float)
 
-        tmp = sub.groupby("grid_idx", as_index=False)["car_demand"].sum() # 聚合避免重複計算
-        gidxs = tmp["grid_idx"].to_numpy(dtype=int)
-        flows = tmp["car_demand"].to_numpy(dtype=float)
+    for gidx in range(n_grids):
+        park_poss, probs = grid_records[gidx]
+        if len(park_poss) > 0:
+            W[gidx, park_poss] = probs   # 每列加總為 1
 
-        # 將每個格網的車流依機率 P(park|grid) 分配到候選停車場，且機率總合為1，每個格網的車流需求會被完整分配出去
-        for gidx, flow in zip(gidxs, flows):
-            park_poss, probs = grid_records[gidx]   # grid_records 的順序就是 grid_idx
-            if len(park_poss) == 0:
-                continue
-            demand_vec[park_poss] += flow * probs
+    # 建立 (d,t) 的連續索引
+    dt_keys = df[["d","t"]].drop_duplicates().sort_values(["d","t"]).reset_index(drop=True)
+    dt_keys["dt_idx"] = np.arange(len(dt_keys), dtype=int)
+    n_dt = len(dt_keys)
 
-        # 由 demand 算 p_avail
-        for pos, pid in enumerate(park_ids):
-            cap = cap_all[pos]
-            demand = float(demand_vec[pos])
-            pressure = demand / (cap + 1e-9)
-            p_avail = float(sigmoid(theta0 - theta1 * pressure)) # 可停車機率
+    df = df.merge(dt_keys, on=["d","t"], how="left")
 
-            out_rows.append({
-                "d": int(d),
-                "t": int(t),
-                "park_id": pid,
-                "demand": demand,
-                "pressure": pressure,
-                "p_avail": p_avail,
-            })
+    # 聚合(dt_idx, grid_idx)的 car_demand 加總
+    agg = df.groupby(["dt_idx","grid_idx"], as_index=False)["car_demand"].sum()
 
-    return pd.DataFrame(out_rows)
+    # 每個時間點每個格網的車流 F (n_dt × n_grids)
+    F = np.zeros((n_dt, n_grids), dtype=float)
+    F[agg["dt_idx"].to_numpy(int), agg["grid_idx"].to_numpy(int)] = agg["car_demand"].to_numpy(float)
+
+    # shape: (n_dt, n_grids) @ (n_grids, n_parks) = (n_dt, n_parks)
+    demand_mat = F @ W   # 每個時間點、每個停車場的車流需求
+
+    # 向量化算 pressure / p_avail
+    pressure_mat = demand_mat / (cap_all[np.newaxis, :] + 1e-9)  # 對 cap_all 升維，使其對齊 demand_mat
+    p_avail_mat  = sigmoid(theta0 - theta1 * pressure_mat)       # shape=(n_dt, n_parks)
+
+    dt_idx_arr   = np.repeat(np.arange(n_dt), n_parks)        # [0,0,...,1,1,...,n_dt]
+    park_id_arr = np.tile(park_ids, n_dt) 
+
+    result_df = pd.DataFrame({
+        "dt_idx": dt_idx_arr,
+        "park_id": park_id_arr,
+        "demand": demand_mat.ravel(),
+        "pressure": pressure_mat.ravel(),
+        "p_avail": p_avail_mat.ravel(),
+    })
+
+    # merge 回 d,t
+    result_df = result_df.merge(dt_keys[["dt_idx","d","t"]], on="dt_idx", how="left")
+    out_df = result_df[["d","t","park_id","demand","pressure","p_avail"]].reset_index(drop=True)
+
+    return pd.DataFrame(out_df)

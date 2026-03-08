@@ -20,12 +20,10 @@ def build_candidates(
     D,
     v_car_kmh=35, 
     v_walk_kmh=4.8, 
-    top_parks_limit=None
 ):
     ''' 
         O : 起點, D : 終點, d0 : 天數
     '''
-
     # 先取當天資料
     day = df_prob[df_prob["w"] == w0].copy()
 
@@ -33,10 +31,6 @@ def build_candidates(
     parks = (day.sort_values(["t"])
                .drop_duplicates("park_id")[["park_id","park_x","park_y"]])
     
-    # 限制候選停車場數量
-    if top_parks_limit is not None and len(parks) > top_parks_limit:
-        parks = parks.head(top_parks_limit).copy()
-
     # 把 O/D/parks 座標轉成經緯度
     od = pd.DataFrame([{"x": O[0], "y": O[1]}, {"x": D[0], "y": D[1]}])
     od_lat_lng = mapper.transform(od)
@@ -86,6 +80,8 @@ def build_candidates(
 # normalize
 def minmax_norm(s: pd.Series) -> pd.Series:
     mn, mx = s.min(), s.max()
+    if len(s) == 1:
+        return pd.Series([0.5], index=s.index) # 避免只有一筆候選時回傳 0
     return (s - mn) / (mx - mn + 1e-9)
 
 def reliability(p: pd.Series, risk_aversion: float) -> pd.Series:

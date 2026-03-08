@@ -10,6 +10,9 @@ from src.geo.grid_to_latlng import GridLatLngMapper, cell_size_m_at
 from src.parking_engine import ParkingEngine
 from src.routing_engine import RoutingEngine
 from src.confidence_engine import ConfidenceEngine
+from src.parks_choose import *
+from src.parks_create import *
+from src.parks_routing import *
 
 from src.preprocess import *
 from src.ConvLSTM import *
@@ -22,6 +25,9 @@ PARKING_PARAM_PATH = "data/parking/grid_parking_params.parquet"
 
 NEED_TRAIN = False
 REBUILD_DATA = False
+
+START_DATE = '2019-09-15'
+T_BUFFER = 4
 
 
 def get_google_route(api_key, origin_lat, origin_lng, dest_lat, dest_lng):
@@ -82,15 +88,11 @@ def radius_m_to_cells(radius_m, mapper, x0, y0):
     return max(1, min(raw, 3))
 
 
-def filter_prediction_area(df, t_slot, grids):
-
-    base = df[df["t"] == t_slot].copy()
-
+def filter_prediction_area_range(df, t_start, t_end, grids):
+    base = df[(df["t"] >= t_start) & (df["t"] <= t_end)].copy()
     grid_df = pd.DataFrame(sorted(set(grids)), columns=["x", "y"])
 
-    out = base.merge(grid_df, on=["x", "y"], how="inner")
-
-    return out
+    return base.merge(grid_df, on=["x", "y"], how="inner")
 
 
 def main():
@@ -156,6 +158,10 @@ def main():
     engine_tmp = ConfidenceEngine(df_feat, mapper)
 
     city_bounds = (42.9, 140.7, 43.9, 141.6)
+    south = 42.9
+    north = 43.9
+    west = 140.7
+    east = 141.6
 
     q = engine_tmp.parse_route_query(user_input)
 
@@ -184,10 +190,11 @@ def main():
 
     target_grids = start_grids + dest_grids
 
-    df_feat_small = filter_prediction_area(
+    df_feat_small = filter_prediction_area_range(
         df_feat,
-        target_t,
-        target_grids
+        t_start=target_t,
+        t_end=min(target_t + T_BUFFER, 47),  # 不超過當天最後一個 slot
+        grids=target_grids
     )
 
     print(f"預測 time slot: {target_t}")
@@ -213,9 +220,11 @@ def main():
 
     print("\n計算停車需求與停車機率...")
 
-    parking_engine = ParkingEngine(PARKING_PARAM_PATH)
+    '''parking_engine = ParkingEngine(PARKING_PARAM_PATH)
 
-    df_parking = parking_engine.run(df_pred)
+    df_parking = parking_engine.run(df_pred)'''
+
+    df_parks, df_with_a, df_prob = create_poi_parking(df_pred,south,west,north,east,mapper,START_DATE)
 
     print("停車機率計算完成")
 
@@ -225,7 +234,7 @@ def main():
 
     print("\n進行停車推薦...")
 
-    routing_engine = RoutingEngine(mapper)
+    '''routing_engine = RoutingEngine(mapper)
 
     best, candidates = routing_engine.recommend_parking(
         df_parking,
@@ -287,7 +296,42 @@ def main():
     print("\n✓ 地圖已輸出: parking_route.html")
 
     print(f"第一段距離: {dist1/1000:.2f} km, 時間: {dur1/60:.1f} 分")
-    print(f"第二段距離: {dist2/1000:.2f} km, 時間: {dur2/60:.1f} 分\n")
+    print(f"第二段距離: {dist2/1000:.2f} km, 時間: {dur2/60:.1f} 分\n")'''
+
+    # 暫時用今天
+    query_date = dt.datetime.today()
+
+    # 暫時用3
+    topK =3
+
+    # 暫時偏好
+    prefs = {
+        "risk_aversion":0.1,
+        
+        "min_prob":0.01,
+        "max_walk_min":120,
+        "max_detour_min":120,
+
+        "w_prob":0.4,
+        "w_walk":0.2,
+        "w_detour":0.2,
+        "w_drive":0.3,
+        "w_price":0.5,
+    }
+
+    fmap = routing_algorithm(
+        mapper,
+        df_prob,
+        query_date,
+        start_x,
+        start_y,
+        dest_x,
+        dest_y,
+        topK, 
+        target_t,
+        api_key,
+        prefs
+    )
 
 
 if __name__ == "__main__":

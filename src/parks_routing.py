@@ -8,7 +8,7 @@ import polyline
 import folium
 import datetime as dt
 
-# 呼叫 google map API畫出最短路徑
+# 呼叫 google map API找出最短路徑
 def get_google_route(api_key, origin_lat, origin_lng, dest_lat, dest_lng,
                      mode="driving", departure_time=None, traffic_model="best_guess"):
 
@@ -66,18 +66,19 @@ def create_poi_parking(
     north,                   # 最大緯度
     east,                    # 最大經度
     mapper:GridLatLngMapper,
+    start_date:str,
     city_q:int = 0.7,        # 市區與郊區區分的百分位
     seed:int = 2025,         # 合成模擬停車場的 random seed
 ):
-    g = urban_score(df_pred=df_pred)
+    g = urban_score(df_pred)
 
     df_poi = fetch_parking_pois_overpass(south, west, north, east)
 
     # 保留公有停車場
-    df_poi_public = df_poi[df_poi["access"].isin([None, "yes", "customers", "permissive", "residents"])]
+    df_poi_public = df_poi[df_poi["access"].isin([None, "yes", "customers", "permissive"])]
 
     # NaN > 80% 蛋雕
-    df_poi_public = df_poi_public.drop(columns=["name", "capacity_osm"])
+    df_poi_public = df_poi_public.drop(columns=["name"])
 
     # 補上NaN
     df_poi_public["parking"] = df_poi_public["parking"].fillna("surface")
@@ -98,7 +99,7 @@ def create_poi_parking(
     )
 
     # 生成矩形區塊內所有格網的人流與車流轉換比
-    df_with_a = build_a(df_pred, g)
+    df_with_a = build_a(df_pred, g, start_date=start_date)
     # 用人流與車流轉換比與模擬停車場的資料透過機率模型算出每個停車場在每個時間點(d,t)的可停車機率
     df_prob = build_parking_prob_baseline(df_with_a, df_parks)
 
@@ -138,6 +139,7 @@ def aggregate_df_prob_same_weekday(df_prob: pd.DataFrame, agg="median") -> pd.Da
 
     return df_w
 
+# 把最佳路徑畫在地圖
 def routing_algorithm(
     mapper:GridLatLngMapper,
     df_prob:pd.DataFrame,
@@ -146,28 +148,36 @@ def routing_algorithm(
     start_y, 
     dest_x, 
     dest_y, 
-    d, 
+    topK, 
     t, 
     api_key,
     prefs:dict,
 ):
-    # 將訓練資料中同 weekday 的停車場資訊用中位數聚合
+    # 將訓練資料中同 weekday 的停車場資訊用中位數聚合(考慮預先計算再傳入)
     df_prob_w = aggregate_df_prob_same_weekday(df_prob, agg="median")
 
     # 把日期轉為 weekday
     w0 = (query_date.weekday() + 1) % 7
 
-    # 給予起點與終點，輸出候選停車場
+    # 給予起點、終點與 weekday，輸出候選停車場
     cand = build_candidates(df_prob_w, mapper=mapper, w0=w0, t0=t, O=(start_x,start_y), D=(dest_x,dest_y))
-    
+
     # 依據偏好選擇最適合的幾個停車場
-    parks = choose_parking(cand, prefs=prefs, top_k=5)
+    parks = choose_parking(cand, prefs=prefs, top_k=topK)
+
+    if parks.empty or "score" not in parks.columns:
+        print(f"沒有符合條件的候選停車場，請放寬 prefs 條件")
+        return None
 
     start_lat, start_lng = mapper.grid_to_latlng(start_x, start_y)
     dest_lat, dest_lng = mapper.grid_to_latlng(dest_x, dest_y)
 
     # 抵達時間(date + hhmm)
     departure_time = dt.datetime.combine(query_date, slot_to_time(t, SLOT_MIN))
+    # 如果時間已過，推到下週同一天
+    if departure_time <= dt.datetime.now():
+        departure_time += dt.timedelta(days=7)
+        print(f"查詢時間已過，改用下週同星期：{departure_time}")
 
     # 建立 Folium 地圖物件，用終點當中心
     fmap = folium.Map(location=[dest_lat, dest_lng], zoom_start=14)
@@ -176,50 +186,48 @@ def routing_algorithm(
     folium.Marker([start_lat, start_lng], popup=f"Start").add_to(fmap)
     folium.Marker([dest_lat,  dest_lng],  popup=f"Destination").add_to(fmap)
 
-    colors = ["red", "blue", "purple", "orange", "darkgreen"]
+    colors = ["red", "blue", "purple", "orange", "green"]
 
     all_points = [(start_lat, start_lng), (dest_lat, dest_lng)]  # for fit_bounds
 
-    top1 = parks.sort_values(by=["score"],ascending=[False]).iloc[0] 
+    for i, row in parks.sort_values("score", ascending=False).reset_index(drop=True).iterrows():
+        pid  = row["park_id"]
+        plat = float(row["lat"])
+        plng = float(row["lng"])
+        color = colors[i % len(colors)]
 
-    pid  = top1["park_id"]
-    plat = float(top1["lat"])
-    plng = float(top1["lng"])
-    color = colors[0]
+        # 可以把不同候選停車場的路線分成不同 group，搭配 LayerControl 讓使用者勾選顯示/隱藏
+        fg = folium.FeatureGroup(name=f"#{i+1} park_id={pid} score={row['score']:.3f}")
 
-    # 可以把不同候選停車場的路線分成不同 group，搭配 LayerControl 讓使用者勾選顯示/隱藏
-    fg = folium.FeatureGroup(name=f"park_id={pid} score={top1['score']:.3f}")
+        coords_drive, dist1, dur1 = get_google_route(
+            api_key, start_lat, start_lng, plat, plng,
+            mode="driving", departure_time=departure_time
+        )
 
-    coords_drive, dist1, dur1 = get_google_route(
-        api_key, start_lat, start_lng, plat, plng,
-        mode="driving", departure_time=departure_time
-    )
+        coords_walk, dist2, dur2 = get_google_route(
+            api_key, plat, plng, dest_lat, dest_lng,
+            mode="walking"
+        )
 
-    coords_walk, dist2, dur2 = get_google_route(
-        api_key, plat, plng, dest_lat, dest_lng,
-        mode="walking"
-    )
+        draw_route(fg, coords_drive, color,
+                tooltip=f"[DRIVE] #{i+1} park={pid} / {dur1/60:.1f}min / {dist1/1000:.2f}km",
+                dash_array=None, weight=5)
 
-    draw_route(fg, coords_drive, color,
-            tooltip=f"[DRIVE] park={pid} / {dur1/60:.1f}min / {dist1/1000:.2f}km",
-            dash_array=None, weight=5)
+        draw_route(fg, coords_walk, color,
+                tooltip=f"[WALK] #{i+1} park={pid} / {dur2/60:.1f}min / {dist2/1000:.2f}km",
+                dash_array="6,10", weight=4)
 
-    draw_route(fg, coords_walk, color,
-            tooltip=f"[WALK] park={pid} / {dur2/60:.1f}min / {dist2/1000:.2f}km",
-            dash_array="6,10", weight=4)
+        folium.Marker(
+            [plat, plng],
+            icon=folium.Icon(color=color, icon="car", prefix="fa"),
+            popup=(f"#{i+1} park_id = {pid}<br>"
+                f"score = {row['score']:.3f}<br>"
+                f"p_avail = {row['p_avail']:.3f}<br>"
+                f"drive ≈ {row['drive_time']:.2f} / walk ≈ {row['walk_time']:.2f}")
+        ).add_to(fg)
 
-    folium.Marker(
-        [plat, plng],
-        popup=(f"park_id = {pid}<br>"
-            f"score = {top1['score']:.3f}<br>"
-            f"p_avail = {top1['p_avail']:.3f}<br>"
-            f"drive ≈ {top1['drive_time']:.2f} / walk ≈ {top1['walk_time']:.2f}")
-    ).add_to(fg)
-
-    fg.add_to(fmap)
-    all_points.extend([(plat, plng)])
-    all_points.extend(coords_drive)
-    all_points.extend(coords_walk)
+        fg.add_to(fmap)
+        all_points.extend([(plat, plng)] + coords_drive + coords_walk)
 
     # 自動縮放到全部路線都看得到
     min_lat = min(p[0] for p in all_points); max_lat = max(p[0] for p in all_points)
@@ -228,3 +236,5 @@ def routing_algorithm(
 
     folium.LayerControl(collapsed=False).add_to(fmap)
     fmap.save("parking_topk_routes.html")
+
+    return fmap
