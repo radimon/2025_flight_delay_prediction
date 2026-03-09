@@ -4,6 +4,8 @@ import requests
 import hashlib
 from src.geo.grid_to_latlng import GridLatLngMapper
 
+SLOT_MIN = 30
+
 # 以預測人流給予格網市區分數(越高越像市區)
 def urban_score(df_pred:pd.DataFrame):
     # df_pred 欄位: d, t, x, y, score
@@ -241,20 +243,37 @@ def build_parking_prob_baseline(
     df_with_a: pd.DataFrame,     # d,t,x,y,score,a
     df_parks: pd.DataFrame,      # park_id, park_x, park_y, capacity
     *,
-    kappa: float = 1.0,          # car_demand = kappa * a * score
     R_choice: float = 3.0,       # R_choice內的停車場人流會較偏好去停 
     sigma: float = 1.5,          # 控制距離衰減速度
     sigma_choice: float = 1.5,   # 控制距離偏好衰減（越小越只選近的）
     theta0: float = 2.0,         # sigmoid 截距(控制整體偏高/偏低，越大sigmoid越接近1，越容易有位)
     theta1: float = 6.0,         # sigmoid 斜率(控制停車需求對滿位的敏感程度)
     cap_beta: float = 0.3,       # 容量加成（大停車場更容易被選，0=不考慮）
+    city_threshold: float = 0.3, # 超過當市區
 ) -> pd.DataFrame:
 
     df = df_with_a.copy()
     parks = df_parks.copy()
 
-    # grid-level car demand
-    df["car_demand"] = kappa * df["a"].astype(float) * df["score"].astype(float)
+    # 先產生格網的市區標籤
+    df["grid_is_city"] = (df["urban_score"] >= city_threshold).astype(int)
+
+    df["hour"] = ((df["t"].astype(int) * SLOT_MIN) // 60).astype(int) % 24
+
+    # 每車平均載客數
+    occ_per_car = np.where(df["is_weekend"].to_numpy() == 1,
+        np.where(df["grid_is_city"].to_numpy() == 1, 1.6, 2.0),   # 假日：市區1.6、郊區2.0
+        np.where(df["grid_is_city"].to_numpy() == 1, 1.2, 1.4))   # 平日：市區1.2、郊區1.4
+    
+    # 平日尖峰
+    peak_mask = (df["is_weekend"].astype(int) == 0) & (df["hour"].isin([7, 8, 17, 18]))
+    occ_per_car[peak_mask] = np.maximum(1.05, occ_per_car[peak_mask] - 0.15) # 接近 1 人 1 車
+
+    df["occ"] = occ_per_car
+    df["kappa"] = 1.0 / df["occ"]
+
+    # grid-level car demand(car_demand = kappa * a * score, 單位:輛 / 30分鐘)
+    df["car_demand"] = df["kappa"] * df["a"].astype(float) * df["score"].astype(float)
 
     # 建立格網索引，把每個(x,y)映射成整數索引
     grid_xy = df[["x","y"]].drop_duplicates().copy()
@@ -306,7 +325,7 @@ def build_parking_prob_baseline(
         probs = attr / (attr.sum() + 1e-12)
         grid_records[gidx] = (cand_poss, probs.astype(float))
 
-    # 每個格網分配到各停車場的機率矩陣 W (n_grids × n_parks) 
+    # 每個格網分配到各停車場的機率矩陣 W (n_grids, n_parks) 
     n_grids = len(grid_xy)
     W = np.zeros((n_grids, n_parks), dtype=float)
 
@@ -325,7 +344,7 @@ def build_parking_prob_baseline(
     # 聚合(dt_idx, grid_idx)的 car_demand 加總
     agg = df.groupby(["dt_idx","grid_idx"], as_index=False)["car_demand"].sum()
 
-    # 每個時間點每個格網的車流 F (n_dt × n_grids)
+    # 每個時間點每個格網的車流 F (n_dt, n_grids)
     F = np.zeros((n_dt, n_grids), dtype=float)
     F[agg["dt_idx"].to_numpy(int), agg["grid_idx"].to_numpy(int)] = agg["car_demand"].to_numpy(float)
 

@@ -58,7 +58,7 @@ def draw_route(layer, coords, color, tooltip=None, dash_array=None, weight=5):
         tooltip=tooltip
     ).add_to(layer)
 
-# 用抓取 POI 並隨機模擬容量的方式生成一份矩形區塊內的停車場資料
+# 用抓取 POI 並隨機模擬容量的方式生成一份矩形區塊內的停車場資料與機率
 def create_poi_parking(
     df_pred:pd.DataFrame,    # 預測出的人流
     south,                   # 最小緯度 
@@ -101,7 +101,7 @@ def create_poi_parking(
     # 生成矩形區塊內所有格網的人流與車流轉換比
     df_with_a = build_a(df_pred, g, start_date=start_date)
     # 用人流與車流轉換比與模擬停車場的資料透過機率模型算出每個停車場在每個時間點(d,t)的可停車機率
-    df_prob = build_parking_prob_baseline(df_with_a, df_parks)
+    df_prob = build_parking_prob_baseline(df_with_a, df_parks, city_threshold=city_threshold)
 
     # 把停車場位置/容量/市區標籤合併回來
     df_prob = df_prob.merge(
@@ -174,7 +174,7 @@ def routing_algorithm(
 
     # 抵達時間(date + hhmm)
     departure_time = dt.datetime.combine(query_date, slot_to_time(t, SLOT_MIN))
-    # 如果時間已過，推到下週同一天
+    # 如果時間已過，推到下週同一天(google map 只能查未來的時間)
     if departure_time <= dt.datetime.now():
         departure_time += dt.timedelta(days=7)
         print(f"查詢時間已過，改用下週同星期：{departure_time}")
@@ -199,6 +199,7 @@ def routing_algorithm(
         # 可以把不同候選停車場的路線分成不同 group，搭配 LayerControl 讓使用者勾選顯示/隱藏
         fg = folium.FeatureGroup(name=f"#{i+1} park_id={pid} score={row['score']:.3f}")
 
+        # departure_time 如果不需要即時路況也可以不傳
         coords_drive, dist1, dur1 = get_google_route(
             api_key, start_lat, start_lng, plat, plng,
             mode="driving", departure_time=departure_time
@@ -219,7 +220,7 @@ def routing_algorithm(
 
         folium.Marker(
             [plat, plng],
-            icon=folium.Icon(color=color, icon="car", prefix="fa"),
+            icon=folium.Icon(color=color, icon="car", prefix="fa"), #改 marker 顏色
             popup=(f"#{i+1} park_id = {pid}<br>"
                 f"score = {row['score']:.3f}<br>"
                 f"p_avail = {row['p_avail']:.3f}<br>"
