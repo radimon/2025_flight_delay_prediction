@@ -19,7 +19,7 @@ def get_google_route(api_key, origin_lat, origin_lng, dest_lat, dest_lng,
     params = {
         "origin": f"{origin_lat},{origin_lng}",
         "destination": f"{dest_lat},{dest_lng}",
-        "mode": mode,
+        "mode": mode,            # driving / walking
         "key": api_key,
         "alternatives": "false",
         "language": "zh-TW"
@@ -59,12 +59,13 @@ def draw_route(layer, coords, color, tooltip=None, dash_array=None, weight=5):
         tooltip=tooltip
     ).add_to(layer)
 
+# 用抓取 POI 並隨機模擬容量的方式生成一份矩形區塊內的停車場資料
 # ============================================================
 # 2) Parking Data Processing
 # ============================================================
 
 def create_poi_parking(
-    df_pred: pd.DataFrame,
+    df_pred: pd.DataFrame,      # 預測出的人流
     south,                      # 最小緯度 
     west,                       # 最小經度
     north,                      # 最大緯度
@@ -78,10 +79,12 @@ def create_poi_parking(
     df_poi = fetch_parking_pois_overpass(south, west, north, east)
 
     # 保留公有停車場
+    df_poi_public = df_poi[df_poi["access"].isin([None, "yes", "customers", "permissive"])]
+
+    # NaN > 80% 蛋雕
     df_poi_public = df_poi[df_poi["access"].isin([None, "yes", "customers", "permissive"])].copy()
     
     if "name" in df_poi_public.columns:
-        # NaN > 80% 蛋雕
         df_poi_public = df_poi_public.drop(columns=["name"])
 
     # 補上NaN
@@ -89,6 +92,7 @@ def create_poi_parking(
     df_poi_public["access"] = df_poi_public["access"].fillna("yes")
     df_poi_public = df_poi_public.rename(columns={"parking": "type"})
 
+    # 用百分位切
     city_threshold = g["urban_score"].quantile(city_q)
 
     df_parks = synthesize_parking_lots_from_poi(
@@ -123,7 +127,7 @@ def slot_to_time(t_idx, slot_min=30):
 # 依查詢日期的 weekday 把所有同樣 d 抽出來，再對每個 parks 做 mean/median 聚合，在不越界的前提下回答任意年份日期的查詢
 def aggregate_df_prob_same_weekday(df_prob: pd.DataFrame, agg="median") -> pd.DataFrame:
     df = df_prob.copy()
-    df["w"] = (df["d"].astype(int) % 7)
+    df["w"] = (df["d"].astype(int) % 7)   # Sun=0..Sat=6
 
     # 動態欄位做聚合
     val_cols = [c for c in ["p_avail","demand","pressure"] if c in df.columns]
@@ -142,6 +146,7 @@ def aggregate_df_prob_same_weekday(df_prob: pd.DataFrame, agg="median") -> pd.Da
 # 3) Routing Algorithm
 # ============================================================
 
+# 把最佳路徑畫在地圖
 def routing_algorithm(
     mapper: GridLatLngMapper,
     df_prob: pd.DataFrame,
@@ -156,7 +161,7 @@ def routing_algorithm(
     orig_dest_lat=None,
     orig_dest_lng=None
 ):
-     # 將訓練資料中同 weekday 的停車場資訊用中位數聚合(考慮預先計算再傳入)
+    # 將訓練資料中同 weekday 的停車場資訊用中位數聚合(考慮預先計算再傳入)
     df_prob_w = aggregate_df_prob_same_weekday(df_prob, agg="median")
 
     # 把日期轉為 weekday
