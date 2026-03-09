@@ -236,7 +236,7 @@ def main():
     print(f"prediction rows: {len(df_feat_small)}")
 
     if df_feat_small.empty:
-        raise RuntimeError("❌ 該時間與範圍內沒有可用預測資料")
+        raise RuntimeError("該時間與範圍內沒有可用預測資料")
 
     # ------------------------------------------------
     # Crowd prediction
@@ -297,7 +297,7 @@ def main():
         "w_price": 0.5,
     }
 
-    # ✅ 傳入 Google Geocoding 的精準座標
+    # 傳入 Google Geocoding 的精準座標
     fmap = routing_algorithm(
         mapper,
         df_prob,
@@ -310,10 +310,10 @@ def main():
         target_t,
         api_key,
         prefs,
-        orig_start_lat=start_lat,
-        orig_start_lng=start_lng,
-        orig_dest_lat=dest_lat,
-        orig_dest_lng=dest_lng
+        origin_start_lat=start_lat,
+        origin_start_lng=start_lng,
+        origin_dest_lat=dest_lat,
+        origin_dest_lng=dest_lng
     )
 
     fmap.save("parking_route.html")

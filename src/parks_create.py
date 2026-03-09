@@ -84,8 +84,8 @@ def synthesize_parking_lots_from_poi(
     df_poi:pd.DataFrame,                    # poi_id, lat, lng, type, access
     mapper:GridLatLngMapper,                # need latlng_to_grid
     seed=42,
-    city_cap_range=(20, 40),                # 市區格數範圍
-    suburb_cap_range=(60, 120),             # 郊區格數範圍
+    city_cap_range=(10, 40),                # 市區格數範圍
+    suburb_cap_range=(60, 150),             # 郊區格數範圍
     city_threshold=0.3,                     # 超過當市區
     drop_outside_grid: bool = True,         # POI 若不在 g 的格網範圍，是否丟掉
     keep_access_yes: bool = False,          # 是否只保留 access==yes 的 POI
@@ -192,11 +192,11 @@ def build_a(df_pred, g, start_date:str,step_minutes=30,
     df = df.merge(g[["x","y","urban_score"]], on=["x","y"], how="left")
     df["urban_score"] = df["urban_score"].fillna(df["urban_score"].median())
 
-    # ===== (A) a_base from urban_score =====
+    # a_base from urban_score
     sub = 1.0 - df["urban_score"].to_numpy() # sub 越接近 1 越像郊區
     a_base = a_city + (a_suburb - a_city) * np.power(sub, gamma)
 
-    # ===== (B) time factor =====
+    # time factor
     hour = df["t"].to_numpy() * (step_minutes / 60.0)
 
     # 週末判斷
@@ -217,7 +217,7 @@ def build_a(df_pred, g, start_date:str,step_minutes=30,
         + is_weekend * A_w * gauss(hour, 13.0, sig_w)
     )
 
-    # ===== (C) event boost from z-score per grid =====
+    # event boost from z-score per grid 
     grid_stats = (df.groupby(["x","y"])["score"]
                     .agg(["mean","std"])
                     .rename(columns={"mean":"mu","std":"sd"})
@@ -243,13 +243,15 @@ def build_parking_prob_baseline(
     df_with_a: pd.DataFrame,     # d,t,x,y,score,a
     df_parks: pd.DataFrame,      # park_id, park_x, park_y, capacity
     *,
-    kappa: float = 1.0,          # 1人流單位有多少台車
-    R_choice: float = 3.0,       # R_choice內的停車場人流會較偏好去停 
-    sigma: float = 1.5,          # 控制距離衰減速度
-    sigma_choice: float = 1.5,   # 控制距離偏好衰減（越小越只選近的）
-    theta0: float = 2.0,         # sigmoid 截距(控制整體偏高/偏低，越大sigmoid越接近1，越容易有位)
-    theta1: float = 6.0,         # sigmoid 斜率(控制停車需求對滿位的敏感程度)
-    cap_beta: float = 0.3,       # 容量加成（大停車場更容易被選，0=不考慮）
+    kappa: float = 2,            # 1 人流單位有多少台車
+    R_choice: float = 2.5,       # R_choice內的停車場人流會較偏好去停 
+    sigma: float = 1.2,          # 控制距離衰減速度
+    sigma_choice: float = 1.2,   # 控制距離偏好衰減（越小越只選近的）
+    theta0: float = 0.5,         # sigmoid 截距(控制整體偏高/偏低，越大sigmoid越接近1，越容易有位)
+    theta1: float = 10,          # sigmoid 斜率(控制停車需求對滿位的敏感程度)
+    cap_beta: float = 0.5,       # 容量加成（大停車場更容易被選，0=不考慮）
+    alpha: float = 15.6,         # Platt scaling 斜率(經校準得)
+    beta: float = -2.9,          # Platt scaling 截距(經校準得)
     city_threshold: float = 0.3, # 超過當市區
 ) -> pd.DataFrame:
 
@@ -271,10 +273,9 @@ def build_parking_prob_baseline(
     occ_per_car[peak_mask] = np.maximum(1.05, occ_per_car[peak_mask] - 0.15) # 接近 1 人 1 車
 
     df["occ"] = occ_per_car
-    df["kappa"] = 1.0 / df["occ"]
 
     # grid-level car demand(car_demand = kappa * a * score, 單位:輛 / 30分鐘)
-    df["car_demand"] = df["kappa"] * df["a"].astype(float) * df["score"].astype(float)
+    df["car_demand"] = (kappa * df["a"].astype(float) * df["score"].astype(float)) / df["occ"]
 
     # 建立格網索引，把每個(x,y)映射成整數索引
     grid_xy = df[["x","y"]].drop_duplicates().copy()
@@ -354,7 +355,9 @@ def build_parking_prob_baseline(
 
     # 向量化算 pressure / p_avail
     pressure_mat = demand_mat / (cap_all[np.newaxis, :] + 1e-9)  # 對 cap_all 升維，使其對齊 demand_mat
-    p_avail_mat  = sigmoid(theta0 - theta1 * pressure_mat)       # shape=(n_dt, n_parks)
+    z_raw = theta0 - theta1 * pressure_mat
+    p_avail_mat_raw  = sigmoid(z_raw)       # shape=(n_dt, n_parks)
+    p_avail_mat  = sigmoid(beta + alpha * z_raw)    # Platt scaling
 
     dt_idx_arr   = np.repeat(np.arange(n_dt), n_parks)        # [0,0,...,1,1,...,n_dt]
     park_id_arr = np.tile(park_ids, n_dt) 
@@ -365,6 +368,7 @@ def build_parking_prob_baseline(
         "demand": demand_mat.ravel(),
         "pressure": pressure_mat.ravel(),
         "p_avail": p_avail_mat.ravel(),
+        "p_avail_raw":p_avail_mat_raw.ravel()
     })
 
     # merge 回 d,t

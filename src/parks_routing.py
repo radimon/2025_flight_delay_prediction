@@ -11,7 +11,6 @@ import datetime as dt
 # 設定時間槽長度，確保與 ConfidenceEngine 一致
 SLOT_MIN = 30
 
-
 # 呼叫 google map api找出最短路徑
 def get_google_route(api_key, origin_lat, origin_lng, dest_lat, dest_lng,
                      mode="driving", departure_time=None, traffic_model="best_guess"):
@@ -59,11 +58,11 @@ def draw_route(layer, coords, color, tooltip=None, dash_array=None, weight=5):
         tooltip=tooltip
     ).add_to(layer)
 
-# 用抓取 POI 並隨機模擬容量的方式生成一份矩形區塊內的停車場資料與機率
 # ============================================================
 # Parking Data Processing
 # ============================================================
 
+# 用抓取 POI 並隨機模擬容量的方式生成一份矩形區塊內的停車場資料與機率
 def create_poi_parking(
     df_pred: pd.DataFrame,      # 預測出的人流
     south,                      # 最小緯度 
@@ -82,8 +81,7 @@ def create_poi_parking(
     df_poi_public = df_poi[df_poi["access"].isin([None, "yes", "customers", "permissive"])]
 
     # NaN > 80% 蛋雕
-    df_poi_public = df_poi[df_poi["access"].isin([None, "yes", "customers", "permissive"])].copy()
-    
+    df_poi_public = df_poi[df_poi["access"].isin([None, "yes", "customers", "permissive"])].copy()    
     if "name" in df_poi_public.columns:
         df_poi_public = df_poi_public.drop(columns=["name"])
 
@@ -156,10 +154,10 @@ def routing_algorithm(
     topK, t, 
     api_key,
     prefs: dict,
-    orig_start_lat=None,
-    orig_start_lng=None,
-    orig_dest_lat=None,
-    orig_dest_lng=None
+    origin_start_lat=None,     # 原始定位的起點與終點的確切經緯度
+    origin_start_lng=None,
+    origin_dest_lat=None,
+    origin_dest_lng=None
 ):
     # 將訓練資料中同 weekday 的停車場資訊用中位數聚合(考慮預先計算再傳入)
     df_prob_w = aggregate_df_prob_same_weekday(df_prob, agg="median")
@@ -179,10 +177,10 @@ def routing_algorithm(
     grid_s_lat, grid_s_lng = mapper.grid_to_latlng(start_x, start_y)
     grid_d_lat, grid_d_lng = mapper.grid_to_latlng(dest_x, dest_y)
 
-    s_lat = orig_start_lat if orig_start_lat is not None else grid_s_lat
-    s_lng = orig_start_lng if orig_start_lng is not None else grid_s_lng
-    d_lat = orig_dest_lat if orig_dest_lat is not None else grid_d_lat
-    d_lng = orig_dest_lng if orig_dest_lng is not None else grid_d_lng
+    s_lat = origin_start_lat if origin_start_lat is not None else grid_s_lat
+    s_lng = origin_start_lng if origin_start_lng is not None else grid_s_lng
+    d_lat = origin_dest_lat if origin_dest_lat is not None else grid_d_lat
+    d_lng = origin_dest_lng if origin_dest_lng is not None else grid_d_lng
 
     # 建立 Folium 地圖物件，用終點當中心
     fmap = folium.Map(location=[d_lat, d_lng], zoom_start=14)
@@ -201,6 +199,7 @@ def routing_algorithm(
     colors = ["red", "blue", "purple", "orange", "darkgreen"]
     all_points = [(s_lat, s_lng), (d_lat, d_lng)]
 
+    # 顯示全部候選
     for i, row in parks.sort_values("score", ascending=False).reset_index(drop=True).iterrows():
         pid = row["park_id"]
         plat, plng = float(row["lat"]), float(row["lng"])
