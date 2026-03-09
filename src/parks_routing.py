@@ -11,10 +11,8 @@ import datetime as dt
 # 設定時間槽長度，確保與 ConfidenceEngine 一致
 SLOT_MIN = 30
 
-# ============================================================
-# 1) Google Maps API Helpers
-# ============================================================
 
+# 呼叫 google map api找出最短路徑
 def get_google_route(api_key, origin_lat, origin_lng, dest_lat, dest_lng,
                      mode="driving", departure_time=None, traffic_model="best_guess"):
     url = "https://maps.googleapis.com/maps/api/directions/json"
@@ -26,12 +24,16 @@ def get_google_route(api_key, origin_lat, origin_lng, dest_lat, dest_lng,
         "alternatives": "false",
         "language": "zh-TW"
     }
+
+    # 只有 driving 才能帶 departure_time / traffic_model
     if mode == "driving" and departure_time is not None:
         if isinstance(departure_time, dt.datetime):
             params["departure_time"] = int(departure_time.timestamp())
         else:
+            # 你也可以直接傳 int unix timestamp
             params["departure_time"] = int(departure_time)
         params["traffic_model"] = traffic_model
+    
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
@@ -41,8 +43,8 @@ def get_google_route(api_key, origin_lat, origin_lng, dest_lat, dest_lng,
         poly = route["overview_polyline"]["points"]
         coords = polyline.decode(poly)
         leg = route["legs"][0]
-        dist = leg["distance"]["value"]
-        dur  = leg["duration"]["value"]
+        dist = leg["distance"]["value"] # meters
+        dur  = leg["duration"]["value"] # seconds
         return coords, dist, dur
     except Exception as e:
         return [(origin_lat, origin_lng), (dest_lat, dest_lng)], 0, 0
@@ -52,7 +54,7 @@ def draw_route(layer, coords, color, tooltip=None, dash_array=None, weight=5):
         coords,
         color=color,
         weight=weight,
-        opacity=0.75,
+        opacity=0.75, 
         dash_array=dash_array,
         tooltip=tooltip
     ).add_to(layer)
@@ -63,19 +65,26 @@ def draw_route(layer, coords, color, tooltip=None, dash_array=None, weight=5):
 
 def create_poi_parking(
     df_pred: pd.DataFrame,
-    south, west, north, east,
+    south,                      # 最小緯度 
+    west,                       # 最小經度
+    north,                      # 最大緯度
+    east,                       # 最大經度
     mapper: GridLatLngMapper,
     start_date: str,
-    city_q: float = 0.7,
-    seed: int = 2025,
+    city_q: float = 0.7,        # 市區與郊區區分的百分位
+    seed: int = 2025,           # 合成模擬停車場的 random seed
 ):
-    g = urban_score(df_pred)
+    g = urban_score(df_pred) 
     df_poi = fetch_parking_pois_overpass(south, west, north, east)
 
+    # 保留公有停車場
     df_poi_public = df_poi[df_poi["access"].isin([None, "yes", "customers", "permissive"])].copy()
+    
     if "name" in df_poi_public.columns:
+        # NaN > 80% 蛋雕
         df_poi_public = df_poi_public.drop(columns=["name"])
 
+    # 補上NaN
     df_poi_public["parking"] = df_poi_public["parking"].fillna("surface")
     df_poi_public["access"] = df_poi_public["access"].fillna("yes")
     df_poi_public = df_poi_public.rename(columns={"parking": "type"})
@@ -90,9 +99,13 @@ def create_poi_parking(
         city_threshold=city_threshold
     )
 
+    # 生成矩形區塊內所有格網的人流與車流轉換比
     df_with_a = build_a(df_pred, g, start_date=start_date)
+
+    # 用人流與車流轉換比與模擬停車場的資料透過機率模型算出每個停車場在每個時間點(d,t)的可停車機率
     df_prob = build_parking_prob_baseline(df_with_a, df_parks)
 
+    # 把停車場位置/容量/市區標籤合併回來
     df_prob = df_prob.merge(
         df_parks[["park_id", "park_x", "park_y", "capacity"] + 
                  [c for c in ["is_city", "urban_score"] if c in df_parks.columns]],
@@ -102,19 +115,27 @@ def create_poi_parking(
 
     return df_parks, df_with_a, df_prob
 
+# t => hhmm
 def slot_to_time(t_idx, slot_min=30):
     m = t_idx * slot_min
     return dt.time(m//60, m%60)
 
+# 依查詢日期的 weekday 把所有同樣 d 抽出來，再對每個 parks 做 mean/median 聚合，在不越界的前提下回答任意年份日期的查詢
 def aggregate_df_prob_same_weekday(df_prob: pd.DataFrame, agg="median") -> pd.DataFrame:
     df = df_prob.copy()
     df["w"] = (df["d"].astype(int) % 7)
+
+    # 動態欄位做聚合
     val_cols = [c for c in ["p_avail","demand","pressure"] if c in df.columns]
     
+    # "median" 或 "mean" 字串，不要傳 np.median
     df_agg = (df.groupby(["w", "t", "park_id"], as_index=False)[val_cols].agg(agg)) 
+
+    # 靜態欄位保留(只需 drop_duplicates，不需要 groupby)
     static_cols = [c for c in df.columns if c not in (["d", "w"] + val_cols)]
     df_static = (df[static_cols].drop_duplicates(subset=["t", "park_id"]))
     
+    # merge 回來
     return df_agg.merge(df_static, on=["t", "park_id"], how="left")
 
 # ============================================================
@@ -124,7 +145,7 @@ def aggregate_df_prob_same_weekday(df_prob: pd.DataFrame, agg="median") -> pd.Da
 def routing_algorithm(
     mapper: GridLatLngMapper,
     df_prob: pd.DataFrame,
-    query_date: dt.date,
+    query_date: dt.date,       # 日期，將其映射為訓練資料的某一天
     start_x, start_y, 
     dest_x, dest_y, 
     topK, t, 
@@ -135,10 +156,16 @@ def routing_algorithm(
     orig_dest_lat=None,
     orig_dest_lng=None
 ):
+     # 將訓練資料中同 weekday 的停車場資訊用中位數聚合(考慮預先計算再傳入)
     df_prob_w = aggregate_df_prob_same_weekday(df_prob, agg="median")
+
+    # 把日期轉為 weekday
     w0 = (query_date.weekday() + 1) % 7
 
+    # 給予起點、終點與 weekday，輸出候選停車場
     cand = build_candidates(df_prob_w, mapper=mapper, w0=w0, t0=t, O=(start_x,start_y), D=(dest_x,dest_y))
+
+    # 依據偏好選擇最適合的幾個停車場
     parks = choose_parking(cand, prefs=prefs, top_k=topK)
 
     if parks.empty or "score" not in parks.columns:
@@ -152,14 +179,19 @@ def routing_algorithm(
     d_lat = orig_dest_lat if orig_dest_lat is not None else grid_d_lat
     d_lng = orig_dest_lng if orig_dest_lng is not None else grid_d_lng
 
+    # 建立 Folium 地圖物件，用終點當中心
     fmap = folium.Map(location=[d_lat, d_lng], zoom_start=14)
 
+    # 起點與終點 marker
     folium.Marker([s_lat, s_lng], popup="精確起點", icon=folium.Icon(color='green', icon='play')).add_to(fmap)
     folium.Marker([d_lat, d_lng], popup="精確終點", icon=folium.Icon(color='red', icon='flag')).add_to(fmap)
 
+    # 抵達時間(date + hhmm)
     departure_time = dt.datetime.combine(query_date, slot_to_time(t, SLOT_MIN))
+    # 如果時間已過，推到下週同一天
     if departure_time <= dt.datetime.now():
         departure_time += dt.timedelta(days=7)
+        print(f"查詢時間已過，改用下週同星期：{departure_time}")
 
     colors = ["red", "blue", "purple", "orange", "darkgreen"]
     all_points = [(s_lat, s_lng), (d_lat, d_lng)]
@@ -169,6 +201,7 @@ def routing_algorithm(
         plat, plng = float(row["lat"]), float(row["lng"])
         color = colors[i % len(colors)]
 
+        # 可以把不同候選停車場的路線分成不同 group，搭配 LayerControl 讓使用者勾選顯示/隱藏
         fg = folium.FeatureGroup(name=f"推薦 #{i+1} (Score: {row['score']:.2f})")
 
         coords_drive, dist1, dur1 = get_google_route(
@@ -195,6 +228,7 @@ def routing_algorithm(
         fg.add_to(fmap)
         all_points.extend([(plat, plng)] + coords_drive + coords_walk)
 
+    # 自動縮放到全部路線都看得到
     lats, lngs = zip(*all_points)
     fmap.fit_bounds([[min(lats), min(lngs)], [max(lats), max(lngs)]])
     folium.LayerControl(collapsed=False).add_to(fmap)
