@@ -16,7 +16,7 @@ def urban_score(df_pred:pd.DataFrame):
 
     # 聚合到每個格網
     g = (df.groupby(["x","y"], as_index=False)
-        .agg(mean_score=("score","mean"),
+        .agg(mean_score=("score","mean"), 
                 max_score=("score","max"),
                 std_score=("score","std"),
                 n=("score","size")))
@@ -63,7 +63,7 @@ def fetch_parking_pois_overpass(south, west, north, east, timeout=180):
             "lat": float(lat),
             "lng": float(lon),
             "name": tags.get("name"),
-            "parking": tags.get("parking"),         # 種類如 surface / underground / multistorey
+            "parking": tags.get("parking"),         # 種類如 surface / underground / multistory
             "access": tags.get("access"),           # private/public
             "capacity_osm": tags.get("capacity"),   
         })
@@ -241,7 +241,7 @@ def build_parking_prob_baseline(
     df_with_a: pd.DataFrame,     # d,t,x,y,score,a
     df_parks: pd.DataFrame,      # park_id, park_x, park_y, capacity
     *,
-    kappa: float = 1.0,          # car_demand = kappa * a * score
+    kappa: float = 1.0,          # car_demand = kappa * a * score (白話文：1人流單位有多少台車)
     R_choice: float = 3.0,       # R_choice內的停車場人流會較偏好去停 
     sigma: float = 1.5,          # 控制距離衰減速度
     sigma_choice: float = 1.5,   # 控制距離偏好衰減（越小越只選近的）

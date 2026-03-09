@@ -4,19 +4,22 @@ import polyline
 import folium
 import pandas as pd
 import numpy as np
+import datetime as dt
+
 from dotenv import load_dotenv
+from openai import OpenAI
 
 from src.geo.grid_to_latlng import GridLatLngMapper, cell_size_m_at
 from src.parking_engine import ParkingEngine
 from src.routing_engine import RoutingEngine
 from src.confidence_engine import ConfidenceEngine
+
 from src.parks_choose import *
 from src.parks_create import *
 from src.parks_routing import *
 
 from src.preprocess import *
 from src.ConvLSTM import *
-
 
 CONVLSTM_PATH = "models/convlstm_sapporo.pkl"
 PARQUET_PATH = "data/processed/sapporo_density.parquet"
@@ -26,9 +29,12 @@ PARKING_PARAM_PATH = "data/parking/grid_parking_params.parquet"
 NEED_TRAIN = False
 REBUILD_DATA = False
 
-START_DATE = '2019-09-15'
+START_DATE = "2019-09-15"
 T_BUFFER = 4
 
+# ------------------------------------------------
+# Google Directions API
+# ------------------------------------------------
 
 def get_google_route(api_key, origin_lat, origin_lng, dest_lat, dest_lng):
 
@@ -68,6 +74,10 @@ def draw_route(fmap, coords, color):
     ).add_to(fmap)
 
 
+# ------------------------------------------------
+# Grid helpers
+# ------------------------------------------------
+
 def get_neighbor_grids(x, y, radius=2):
 
     grids = []
@@ -89,11 +99,17 @@ def radius_m_to_cells(radius_m, mapper, x0, y0):
 
 
 def filter_prediction_area_range(df, t_start, t_end, grids):
+
     base = df[(df["t"] >= t_start) & (df["t"] <= t_end)].copy()
+
     grid_df = pd.DataFrame(sorted(set(grids)), columns=["x", "y"])
 
     return base.merge(grid_df, on=["x", "y"], how="inner")
 
+
+# ------------------------------------------------
+# Main
+# ------------------------------------------------
 
 def main():
 
@@ -102,11 +118,11 @@ def main():
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
 
     if not api_key:
-        raise ValueError("Google Maps API key not found")
+        raise ValueError("❌ Google Maps API key not found")
 
     print("\n===== AI Parking Navigation =====\n")
 
-    user_input = input("請輸入查詢（例如：小樽車站 小樽運河 週六 18:00 附近）：").strip()
+    user_input = input("請輸入查詢：").strip()
 
     print("\n正在載入模型與原始資料...")
 
@@ -138,6 +154,10 @@ def main():
 
     df_feat = df_feat.dropna(subset=need_cols).copy()
 
+    # ------------------------------------------------
+    # Grid anchors
+    # ------------------------------------------------
+
     anchors = [
         {"x": 24, "y": 151, "lat": 43.0691833, "lng": 141.3514707},
         {"x": 24, "y": 148, "lat": 43.0794037, "lng": 141.3422559},
@@ -149,26 +169,31 @@ def main():
 
     mapper = GridLatLngMapper(anchors)
 
-    # -----------------------------
+    # ------------------------------------------------
     # Query parsing
-    # -----------------------------
+    # ------------------------------------------------
 
     print("\n解析查詢...")
 
-    engine_tmp = ConfidenceEngine(df_feat, mapper)
+    client = OpenAI()
+
+    engine_tmp = ConfidenceEngine(
+        df_feat,
+        mapper,
+        openai_client=client,
+        google_api_key=api_key
+    )
 
     city_bounds = (42.9, 140.7, 43.9, 141.6)
-    south = 42.9
-    north = 43.9
-    west = 140.7
-    east = 141.6
 
-    q = engine_tmp.parse_route_query(user_input)
+    q = engine_tmp.parse_route_query_llm(user_input)
+
+    print("LLM parsing result:", q)
 
     resolved = engine_tmp.resolve_two_locations(q, city_bounds)
 
     if resolved is None:
-        raise RuntimeError("地點解析失敗")
+        raise RuntimeError("❌ 地點解析失敗")
 
     start_info, dest_info = resolved
 
@@ -181,9 +206,18 @@ def main():
     print(f"起點 grid: ({start_x}, {start_y})")
     print(f"終點 grid: ({dest_x}, {dest_y})")
 
+    # ------------------------------------------------
+    # Time slot
+    # ------------------------------------------------
+
     target_t = engine_tmp.time_to_slot(q.hhmm)
 
-    radius_cells = radius_m_to_cells(float(q.radius_m or 400), mapper, dest_x, dest_y)
+    radius_cells = radius_m_to_cells(
+        float(q.radius_m or 400),
+        mapper,
+        dest_x,
+        dest_y
+    )
 
     start_grids = get_neighbor_grids(start_x, start_y, radius=radius_cells)
     dest_grids = get_neighbor_grids(dest_x, dest_y, radius=radius_cells)
@@ -193,7 +227,7 @@ def main():
     df_feat_small = filter_prediction_area_range(
         df_feat,
         t_start=target_t,
-        t_end=min(target_t + T_BUFFER, 47),  # 不超過當天最後一個 slot
+        t_end=min(target_t + T_BUFFER, 47),
         grids=target_grids
     )
 
@@ -202,7 +236,11 @@ def main():
     print(f"prediction rows: {len(df_feat_small)}")
 
     if df_feat_small.empty:
-        raise RuntimeError("該時間與範圍內沒有可用預測資料")
+        raise RuntimeError("❌ 該時間與範圍內沒有可用預測資料")
+
+    # ------------------------------------------------
+    # Crowd prediction
+    # ------------------------------------------------
 
     print("\n產出人流預測中...")
 
@@ -212,113 +250,54 @@ def main():
         cfg
     )
 
-    print("人流預測完成")
+    print("✓ 人流預測完成")
 
-    # -----------------------------
-    # 停車需求模型
-    # -----------------------------
+    # ------------------------------------------------
+    # Parking probability
+    # ------------------------------------------------
 
     print("\n計算停車需求與停車機率...")
 
-    '''parking_engine = ParkingEngine(PARKING_PARAM_PATH)
+    south = 42.9
+    north = 43.9
+    west = 140.7
+    east = 141.6
 
-    df_parking = parking_engine.run(df_pred)'''
+    df_parks, df_with_a, df_prob = create_poi_parking(
+        df_pred,
+        south,
+        west,
+        north,
+        east,
+        mapper,
+        START_DATE
+    )
 
-    df_parks, df_with_a, df_prob = create_poi_parking(df_pred,south,west,north,east,mapper,START_DATE)
+    print("✓ 停車機率計算完成")
 
-    print("停車機率計算完成")
-
-    # -----------------------------
-    # 停車推薦
-    # -----------------------------
+    # ------------------------------------------------
+    # Routing
+    # ------------------------------------------------
 
     print("\n進行停車推薦...")
 
-    '''routing_engine = RoutingEngine(mapper)
-
-    best, candidates = routing_engine.recommend_parking(
-        df_parking,
-        start_lat,
-        start_lng,
-        dest_lat,
-        dest_lng
-    )
-
-    print("\n推薦停車位置:")
-    print(best)
-
-    park_lat = float(best["lat"])
-    park_lng = float(best["lng"])
-
-    print("\n呼叫 Google Directions API...")
-
-    coords1, dist1, dur1 = get_google_route(
-        api_key,
-        start_lat,
-        start_lng,
-        park_lat,
-        park_lng
-    )
-
-    coords2, dist2, dur2 = get_google_route(
-        api_key,
-        park_lat,
-        park_lng,
-        dest_lat,
-        dest_lng
-    )
-
-    fmap = folium.Map(
-        location=[dest_lat, dest_lng],
-        zoom_start=14
-    )
-
-    draw_route(fmap, coords1, "blue")
-    draw_route(fmap, coords2, "green")
-
-    folium.Marker(
-        [start_lat, start_lng],
-        popup=f"Start: {q.start_place}"
-    ).add_to(fmap)
-
-    folium.Marker(
-        [park_lat, park_lng],
-        popup="Parking"
-    ).add_to(fmap)
-
-    folium.Marker(
-        [dest_lat, dest_lng],
-        popup=f"Destination: {q.dest_place}"
-    ).add_to(fmap)
-
-    fmap.save("parking_route.html")
-
-    print("\n✓ 地圖已輸出: parking_route.html")
-
-    print(f"第一段距離: {dist1/1000:.2f} km, 時間: {dur1/60:.1f} 分")
-    print(f"第二段距離: {dist2/1000:.2f} km, 時間: {dur2/60:.1f} 分\n")'''
-
-    # 暫時用今天
     query_date = dt.datetime.today()
 
-    # 暫時用3
-    topK =3
+    topK = 3
 
-    # 暫時偏好
     prefs = {
-        "risk_aversion":0.1,
-        
-        "min_prob":0.01,
-        "max_walk_min":120,
-        "max_detour_min":120,
-
-        "w_prob":0.4,
-        "w_walk":0.2,
-        "w_detour":0.2,
-        "w_drive":0.3,
-        "w_price":0.5,
+        "risk_aversion": 0.1,
+        "min_prob": 0.01,
+        "max_walk_min": 120,
+        "max_detour_min": 120,
+        "w_prob": 0.4,
+        "w_walk": 0.2,
+        "w_detour": 0.2,
+        "w_drive": 0.3,
+        "w_price": 0.5,
     }
 
+    # ✅ 傳入 Google Geocoding 的精準座標
     fmap = routing_algorithm(
         mapper,
         df_prob,
@@ -327,11 +306,19 @@ def main():
         start_y,
         dest_x,
         dest_y,
-        topK, 
+        topK,
         target_t,
         api_key,
-        prefs
+        prefs,
+        orig_start_lat=start_lat,
+        orig_start_lng=start_lng,
+        orig_dest_lat=dest_lat,
+        orig_dest_lng=dest_lng
     )
+
+    fmap.save("parking_route.html")
+
+    print("\n✓ 導航地圖已輸出: parking_route.html")
 
 
 if __name__ == "__main__":
