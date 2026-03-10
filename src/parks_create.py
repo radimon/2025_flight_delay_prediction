@@ -32,7 +32,7 @@ def urban_score(df_pred:pd.DataFrame):
     return g
 
 # 用Overpass API 抓指定範圍內的停車場資料(傳入四組經緯度)
-def fetch_parking_pois_overpass(south, west, north, east, timeout=180):
+def fetch_parking_pois_overpass(south, west, north, east, timeout=180, refetch=True):
     query = f"""
         [out:json][timeout:{timeout}];
         (
@@ -43,34 +43,39 @@ def fetch_parking_pois_overpass(south, west, north, east, timeout=180):
         out center tags;
     """
 
-    url = "https://overpass-api.de/api/interpreter"
-    r = requests.post(url, data={"data": query}, timeout=timeout)
-    r.raise_for_status()
-    data = r.json()
+    if refetch:
+        url = "https://overpass-api.de/api/interpreter"
+        r = requests.post(url, data={"data": query}, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
 
-    rows = []
-    for el in data.get("elements", []):
-        tags = el.get("tags", {})
-        # node(點狀停車場) 有 lat/lon；way/relation(線/面狀停車場) 用 center
-        if el["type"] == "node":
-            lat, lon = el.get("lat"), el.get("lon")
-        else:
-            c = el.get("center", {})
-            lat, lon = c.get("lat"), c.get("lon")
-        if lat is None or lon is None:
-            continue
+        rows = []
+        for el in data.get("elements", []):
+            tags = el.get("tags", {})
+            # node(點狀停車場) 有 lat/lon；way/relation(線/面狀停車場) 用 center
+            if el["type"] == "node":
+                lat, lon = el.get("lat"), el.get("lon")
+            else:
+                c = el.get("center", {})
+                lat, lon = c.get("lat"), c.get("lon")
+            if lat is None or lon is None:
+                continue
 
-        rows.append({
-            "poi_id": f'{el["type"]}/{el["id"]}',
-            "lat": float(lat),
-            "lng": float(lon),
-            "name": tags.get("name"),
-            "parking": tags.get("parking"),         # 種類如 surface / underground / multistory
-            "access": tags.get("access"),           # private/public
-            "capacity_osm": tags.get("capacity"),   
-        })
+            rows.append({
+                "poi_id": f'{el["type"]}/{el["id"]}',
+                "lat": float(lat),
+                "lng": float(lon),
+                "name": tags.get("name"),
+                "parking": tags.get("parking"),         # 種類如 surface / underground / multistory
+                "access": tags.get("access"),           # private/public
+                "capacity_osm": tags.get("capacity"),   
+            })
 
-    df_pois = pd.DataFrame(rows).drop_duplicates(subset=["poi_id"])
+        df_pois = pd.DataFrame(rows).drop_duplicates(subset=["poi_id"])
+        df_pois.to_csv("data/parking lots/sapporp_pois.csv", index=False)
+    else:
+        df_pois = pd.read_csv("data/parking lots/sapporp_pois.csv")
+
     return df_pois
 
 # poi_id 產生穩定 seed（不受 Python hash 隨機化影響）
@@ -192,11 +197,15 @@ def build_a(df_pred, g, start_date:str,step_minutes=30,
     df = df.merge(g[["x","y","urban_score"]], on=["x","y"], how="left")
     df["urban_score"] = df["urban_score"].fillna(df["urban_score"].median())
 
-    # a_base from urban_score
+    # ====
+    # a_base from urban_score(依照郊區程度，於 city 與 suburb 兩個基準值之間平滑插值)
+    # ====
     sub = 1.0 - df["urban_score"].to_numpy() # sub 越接近 1 越像郊區
-    a_base = a_city + (a_suburb - a_city) * np.power(sub, gamma)
+    a_base = a_city + (a_suburb - a_city) * np.power(sub, gamma)    
 
+    # ====
     # time factor
+    # ====
     hour = df["t"].to_numpy() * (step_minutes / 60.0)
 
     # 週末判斷
@@ -217,7 +226,9 @@ def build_a(df_pred, g, start_date:str,step_minutes=30,
         + is_weekend * A_w * gauss(hour, 13.0, sig_w)
     )
 
+    # ====
     # event boost from z-score per grid 
+    # ==== 
     grid_stats = (df.groupby(["x","y"])["score"]
                     .agg(["mean","std"])
                     .rename(columns={"mean":"mu","std":"sd"})

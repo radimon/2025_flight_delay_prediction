@@ -73,9 +73,10 @@ def create_poi_parking(
     start_date: str,
     city_q: float = 0.7,        # 市區與郊區區分的百分位
     seed: int = 2025,           # 合成模擬停車場的 random seed
+    refetch: bool = False
 ):
     g = urban_score(df_pred) 
-    df_poi = fetch_parking_pois_overpass(south, west, north, east)
+    df_poi = fetch_parking_pois_overpass(south, west, north, east, refetch=refetch)
 
     # 保留公有停車場
     df_poi_public = df_poi[df_poi["access"].isin([None, "yes", "customers", "permissive"])]
@@ -144,6 +145,25 @@ def aggregate_df_prob_same_weekday(df_prob: pd.DataFrame, agg="median") -> pd.Da
 # Routing Algorithm
 # ============================================================
 
+# 找出最近的未來時間點，符合指定的 weekday 與時段
+def next_datetime_for_weekday(weekday_target: int, t_slot: int, slot_min: int = 30) -> dt.datetime:
+    slot_time = slot_to_time(t_slot, slot_min)           # 把 t_slot 轉成 hh:mm
+    now = dt.datetime.now()
+
+    # 找最近符合 weekday 的日期
+    today_wd = now.weekday()                             # 今天是星期幾
+    days_ahead = (weekday_target - today_wd) % 7         # 距離目標 weekday 幾天
+
+    candidate = dt.datetime.combine(
+        now.date() + dt.timedelta(days=days_ahead), slot_time
+    )
+
+    # 如果算出來的時間點已經過了（例如今天就是目標 weekday 但時間已過），推到下一週
+    if candidate <= now:
+        candidate += dt.timedelta(days=7)
+
+    return candidate
+
 # 把最佳路徑畫在地圖
 def routing_algorithm(
     mapper: GridLatLngMapper,
@@ -190,11 +210,8 @@ def routing_algorithm(
     folium.Marker([d_lat, d_lng], popup="精確終點", icon=folium.Icon(color='red', icon='flag')).add_to(fmap)
 
     # 抵達時間(date + hhmm)
-    departure_time = dt.datetime.combine(query_date, slot_to_time(t, SLOT_MIN))
-    # 如果時間已過，推到下週同一天(google map 只能查未來的時間)
-    if departure_time <= dt.datetime.now():
-        departure_time += dt.timedelta(days=7)
-        print(f"查詢時間已過，改用下週同星期：{departure_time}")
+    departure_time = next_datetime_for_weekday(w0, t, SLOT_MIN)
+    print(f"預計抵達時間：{departure_time}（{departure_time.strftime('%A')}）")
 
     colors = ["red", "blue", "purple", "orange", "darkgreen"]
     all_points = [(s_lat, s_lng), (d_lat, d_lng)]

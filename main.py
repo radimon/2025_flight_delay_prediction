@@ -270,7 +270,8 @@ def main():
         north,
         east,
         mapper,
-        START_DATE
+        START_DATE,
+        refetch=False
     )
 
     print("✓ 停車機率計算完成")
@@ -281,6 +282,7 @@ def main():
 
     print("\n進行停車推薦...")
 
+    # 暫時用今天
     query_date = dt.datetime.today()
 
     topK = 3
