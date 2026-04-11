@@ -67,6 +67,12 @@ class LSTMRegEmbed(nn.Module):
     def forward(self, x_seq, weekday, t_id, x_id, y_id, is_weekend):
         out, _ = self.lstm(x_seq)          # (B,L,H)
         h = out[:, -1, :]                  # last hidden
+
+        print("weekday min/max:", weekday.min().item(), weekday.max().item(), weekday.shape, weekday.dtype)
+        print("t_id min/max:", t_id.min().item(), t_id.max().item(), t_id.shape, t_id.dtype)
+        print("x_id min/max:", x_id.min().item(), x_id.max().item(), x_id.shape, x_id.dtype)
+        print("y_id min/max:", y_id.min().item(), y_id.max().item(), y_id.shape, y_id.dtype)
+        
         e = torch.cat([
             self.emb_weekday(weekday),
             self.emb_t(t_id),
@@ -253,4 +259,55 @@ def load_lstm_embed(path):
     )
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
+    return model, cfg
+
+def build_lstm_model_from_data(
+    dfs,
+    seq_len=8,
+    hidden=64,
+    layers=1,
+    emb_wd=2,
+    emb_t=8,
+    emb_x=16,
+    emb_y=16,
+):
+    """
+    根據資料自動推估 embedding 範圍並建立 LSTM 模型
+    dfs: list of DataFrame，例如 [train_df, val_df, test_df]
+    回傳: model, cfg
+    """
+    all_df = pd.concat(dfs, axis=0, ignore_index=True)
+
+    n_weekday = int(all_df["weekday"].max()) + 1
+    n_t = int(all_df["t"].max()) + 1
+    n_x = int(all_df["x"].max()) + 1
+    n_y = int(all_df["y"].max()) + 1
+
+    model = LSTMRegEmbed(
+        hidden=hidden,
+        layers=layers,
+        n_weekday=n_weekday,
+        n_t=n_t,
+        n_x=n_x,
+        n_y=n_y,
+        emb_wd=emb_wd,
+        emb_t=emb_t,
+        emb_x=emb_x,
+        emb_y=emb_y,
+    )
+
+    cfg = {
+        "seq_len": seq_len,
+        "hidden": hidden,
+        "layers": layers,
+        "n_weekday": n_weekday,
+        "n_t": n_t,
+        "n_x": n_x,
+        "n_y": n_y,
+        "emb_wd": emb_wd,
+        "emb_t": emb_t,
+        "emb_x": emb_x,
+        "emb_y": emb_y,
+    }
+
     return model, cfg

@@ -32,7 +32,7 @@ class LGBMModel:
         self.model.fit(
             X_train, y_train,
             eval_set=[(X_val, y_val)],
-            callbacks=[None] # 可加入 early_stopping
+            callbacks=[] # 可加入 early_stopping
         )
         return self.model
 

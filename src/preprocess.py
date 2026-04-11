@@ -43,18 +43,58 @@ def prepare_base_df(parquet_path, remove_sentinel=True):
 
     return df
 
-def add_lags_and_rollings(df, seq_len, start_date="2023-01-01"):
-    # weekday/is_weekend（你如果有更準的 d->date 對照，就改這裡）
+def add_lags_and_rollings(df, seq_len=8, start_date="2023-01-01"):
+    """
+    Make lag features consistent with ConvLSTM / PredRNN offsets:
+        lag_1 ~ lag_6 : same day previous 1~6 time slots
+        lag_7         : previous day same time slot
+        lag_8         : previous week same time slot
+
+    Notes
+    -----
+    - Assumes df has columns: d, t, x, y, count
+    - Assumes time slots t are ordered discrete indices (e.g. 0~47)
+    - Keeps output column names lag_1 ... lag_8 unchanged,
+      so downstream notebook code does not need modification.
+    """
+
+    if seq_len != 8:
+        raise ValueError(
+            f"This version is designed for seq_len=8 to match ConvLSTM offsets, got seq_len={seq_len}."
+        )
+
+    df = df.copy()
+
+    # calendar features
     df["date"] = pd.to_datetime(start_date) + pd.to_timedelta(df["d"], unit="D")
     df["weekday"] = df["date"].dt.weekday
     df["is_weekend"] = (df["weekday"] >= 5).astype(int)
 
-    df = df.sort_values(["x","y","t","d"]).reset_index(drop=True)
-    g = df.groupby(["x","y","t"])["count"]
+    # base index for self-merge
+    base = df[["d", "t", "x", "y", "count"]].copy()
 
-    # LSTM 用：lag_1..lag_seq_len
-    for k in range(1, seq_len+1):
-        df[f"lag_{k}"] = g.shift(k)
+    # offsets aligned with ConvLSTM / PredRNN
+    offsets = [
+        (0, -1),
+        (0, -2),
+        (0, -3),
+        (0, -4),
+        (0, -5),
+        (0, -6),
+        (-1, 0),
+        (-7, 0),
+    ]
+
+    for i, (d_shift, t_shift) in enumerate(offsets, start=1):
+        tmp = base.copy()
+        tmp["d"] = tmp["d"] - d_shift
+        tmp["t"] = tmp["t"] - t_shift
+        tmp = tmp.rename(columns={"count": f"lag_{i}"})
+        df = df.merge(
+            tmp[["d", "t", "x", "y", f"lag_{i}"]],
+            on=["d", "t", "x", "y"],
+            how="left",
+        )
 
     return df
 
