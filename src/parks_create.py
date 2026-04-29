@@ -72,9 +72,9 @@ def fetch_parking_pois_overpass(south, west, north, east, timeout=180, refetch=T
             })
 
         df_pois = pd.DataFrame(rows).drop_duplicates(subset=["poi_id"])
-        df_pois.to_csv("data/parking lots/sapporp_pois.csv", index=False)
+        df_pois.to_csv("../data/parking lots/sapporp_pois.csv", index=False)
     else:
-        df_pois = pd.read_csv("data/parking lots/sapporp_pois.csv")
+        df_pois = pd.read_csv("../data/parking lots/sapporp_pois.csv")
 
     return df_pois
 
@@ -261,8 +261,8 @@ def build_parking_prob_baseline(
     theta0: float = 0.5,         # sigmoid 截距(控制整體偏高/偏低，越大sigmoid越接近1，越容易有位)
     theta1: float = 10,          # sigmoid 斜率(控制停車需求對滿位的敏感程度)
     cap_beta: float = 0.5,       # 容量加成（大停車場更容易被選，0=不考慮）
-    alpha: float = 15.6,         # Platt scaling 斜率(經校準得)
-    beta: float = -2.9,          # Platt scaling 截距(經校準得)
+    alpha: float = 1.1207,       # Platt scaling 斜率，由 Monte Carlo 排隊模擬校準（07-5_parking_simulate.ipynb，p_true=P(avail>0)）
+    beta: float = -0.6474,       # Platt scaling 截距，由 Monte Carlo 排隊模擬校準（07-5_parking_simulate.ipynb，p_true=P(avail>0)）
     city_threshold: float = 0.3, # 超過當市區
 ) -> pd.DataFrame:
 
