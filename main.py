@@ -23,7 +23,7 @@ from src.ConvLSTM import *
 
 CONVLSTM_PATH = "models/convlstm_sapporo.pkl"
 PARQUET_PATH = "data/processed/sapporo_density.parquet"
-SAVED_FILLED_ZERO_DATA_PATH = "data/processed/sapporo_density_filled_zero.parquet"
+SAVED_FILLED_ZERO_DATA_PATH = "data/processed/sapporo_density.parquet"
 PARKING_PARAM_PATH = "data/parking/grid_parking_params.parquet"
 
 NEED_TRAIN = False

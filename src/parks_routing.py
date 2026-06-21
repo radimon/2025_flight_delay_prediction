@@ -13,7 +13,8 @@ SLOT_MIN = 30
 
 # 呼叫 google map api找出最短路徑
 def get_google_route(api_key, origin_lat, origin_lng, dest_lat, dest_lng,
-                     mode="driving", departure_time=None, traffic_model="best_guess"):
+                     mode="driving", departure_time=None, traffic_model="best_guess",
+                     waypoints=None):
     url = "https://maps.googleapis.com/maps/api/directions/json"
     params = {
         "origin": f"{origin_lat},{origin_lng}",
@@ -32,7 +33,11 @@ def get_google_route(api_key, origin_lat, origin_lng, dest_lat, dest_lng,
             # 你也可以直接傳 int unix timestamp
             params["departure_time"] = int(departure_time)
         params["traffic_model"] = traffic_model
-    
+
+    # waypoints 串聯中間停車場（格式："lat,lng|lat,lng|..."）
+    if waypoints:
+        params["waypoints"] = "|".join([f"{lat},{lng}" for lat, lng in waypoints])
+
     try:
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
@@ -41,9 +46,9 @@ def get_google_route(api_key, origin_lat, origin_lng, dest_lat, dest_lng,
         route = data["routes"][0]
         poly = route["overview_polyline"]["points"]
         coords = polyline.decode(poly)
-        leg = route["legs"][0]
-        dist = leg["distance"]["value"] # meters
-        dur  = leg["duration"]["value"] # seconds
+        # 有 waypoints 時 legs 會有多段，加總距離與時間
+        dist = sum(leg["distance"]["value"] for leg in route["legs"])  # meters
+        dur  = sum(leg["duration"]["value"] for leg in route["legs"])  # seconds
         return coords, dist, dur
     except Exception as e:
         return [(origin_lat, origin_lng), (dest_lat, dest_lng)], 0, 0
@@ -216,39 +221,57 @@ def routing_algorithm(
     colors = ["red", "blue", "purple", "orange", "darkgreen"]
     all_points = [(s_lat, s_lng), (d_lat, d_lng)]
 
-    # 顯示全部候選
-    for i, row in parks.sort_values("score", ascending=False).reset_index(drop=True).iterrows():
+    # 依分數由高到低排序停車場
+    parks_sorted = parks.sort_values("score", ascending=False).reset_index(drop=True)
+
+    # ── 串聯開車路線：起點 → 停車場1 → 停車場2 → ... → 最後一個停車場 ──
+    park_coords = [(float(row["lat"]), float(row["lng"])) for _, row in parks_sorted.iterrows()]
+
+    # 中間停車場當 waypoints（不含第一個起點後的目標，即最後一個停車場為 destination）
+    drive_waypoints = park_coords[:-1] if len(park_coords) > 1 else None
+    last_plat, last_plng = park_coords[-1]
+
+    coords_drive_all, dist_drive_total, dur_drive_total = get_google_route(
+        api_key, s_lat, s_lng, last_plat, last_plng,
+        mode="driving", departure_time=departure_time,
+        waypoints=drive_waypoints
+    )
+
+    # 把串聯開車路線畫在底層（獨立 FeatureGroup）
+    fg_drive = folium.FeatureGroup(name=f"開車路線（串聯所有停車場）")
+    draw_route(fg_drive, coords_drive_all, "black",
+               tooltip=f"開車總計: {dur_drive_total/60:.1f}分 / {dist_drive_total/1000:.1f}km",
+               weight=5)
+    fg_drive.add_to(fmap)
+    all_points.extend(coords_drive_all)
+
+    # ── 各停車場的步行路線到終點 ──
+    for i, row in parks_sorted.iterrows():
         pid = row["park_id"]
         plat, plng = float(row["lat"]), float(row["lng"])
         color = colors[i % len(colors)]
 
-        # 可以把不同候選停車場的路線分成不同 group，搭配 LayerControl 讓使用者勾選顯示/隱藏
         fg = folium.FeatureGroup(name=f"推薦 #{i+1} (Score: {row['score']:.2f})")
 
-        # departure_time 如果不需要即時路況也可以不傳
-        coords_drive, dist1, dur1 = get_google_route(
-            api_key, s_lat, s_lng, plat, plng,
-            mode="driving", departure_time=departure_time
-        )
-
-        coords_walk, dist2, dur2 = get_google_route(
+        coords_walk, dist_walk, dur_walk = get_google_route(
             api_key, plat, plng, d_lat, d_lng,
             mode="walking"
         )
 
-        draw_route(fg, coords_drive, color, tooltip=f"開車: {dur1/60:.1f}分", weight=5)
-        draw_route(fg, coords_walk, color, tooltip=f"走路: {dur2/60:.1f}分", dash_array="6,10", weight=4)
+        draw_route(fg, coords_walk, color,
+                   tooltip=f"步行至終點: {dur_walk/60:.1f}分",
+                   dash_array="6,10", weight=4)
 
         folium.Marker(
             [plat, plng],
             icon=folium.Icon(color=color, icon="car", prefix="fa"),
             popup=(f"<b>候選 #{i+1}</b><br> ID: {pid}<br>"
                    f"可停機率: {row['p_avail']:.2%}<br>"
-                   f"步行距離: {dist2}m")
+                   f"步行至終點: {dist_walk}m")
         ).add_to(fg)
 
         fg.add_to(fmap)
-        all_points.extend([(plat, plng)] + coords_drive + coords_walk)
+        all_points.extend([(plat, plng)] + coords_walk)
 
     # 自動縮放到全部路線都看得到
     lats, lngs = zip(*all_points)

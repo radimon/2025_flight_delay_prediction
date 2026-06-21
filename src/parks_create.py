@@ -74,7 +74,7 @@ def fetch_parking_pois_overpass(south, west, north, east, timeout=180, refetch=T
         df_pois = pd.DataFrame(rows).drop_duplicates(subset=["poi_id"])
         df_pois.to_csv("../data/parking lots/sapporp_pois.csv", index=False)
     else:
-        df_pois = pd.read_csv("../data/parking lots/sapporp_pois.csv")
+        df_pois = pd.read_csv("data/parking lots/sapporo_pois.csv")
 
     return df_pois
 
