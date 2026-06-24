@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html>
+<head>
+    
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css"/>
+    <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.2.0/css/all.min.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/leaflet.awesome.rotate.min.css"/>
+    
+            <meta name="viewport" content="width=device-width,
+                initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <style>
+                #map_0194f63d03556ed2ed92e3cb488b38ca {
+                    position: relative;
+                    width: 100.0%;
+                    height: 100.0%;
+                    left: 0.0%;
+                    top: 0.0%;
+                }
+                .leaflet-container { font-size: 1rem; }
+            </style>
+
+            <style>html, body {
+                width: 100%;
+                height: 100%;
+                margin: 0;
+                padding: 0;
+            }
+            </style>
+
+            <style>#map {
+                position:absolute;
+                top:0;
+                bottom:0;
+                right:0;
+                left:0;
+                }
+            </style>
+
+            <script>
+                L_NO_TOUCH = false;
+                L_DISABLE_3D = false;
+            </script>
+
+        
+</head>
+<body>
+    
+    
+            <div class="folium-map" id="map_0194f63d03556ed2ed92e3cb488b38ca" ></div>
+        
+</body>
+<script>
+    
+    
+            var map_0194f63d03556ed2ed92e3cb488b38ca = L.map(
+                "map_0194f63d03556ed2ed92e3cb488b38ca",
+                {
+                    center: [43.1158533, 141.3801858],
+                    crs: L.CRS.EPSG3857,
+                    ...{
+  "zoom": 14,
+  "zoomControl": true,
+  "preferCanvas": false,
+}
+
+                }
+            );
+
+            
+
+        
+    
+            var tile_layer_c3fe7785ca3241636040c2e7d46bed95 = L.tileLayer(
+                "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+                {
+  "minZoom": 0,
+  "maxZoom": 20,
+  "maxNativeZoom": 20,
+  "noWrap": false,
+  "attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors \u0026copy; \u003ca href=\"https://carto.com/attributions\"\u003eCARTO\u003c/a\u003e",
+  "subdomains": "abcd",
+  "detectRetina": false,
+  "tms": false,
+  "opacity": 1,
+}
+
+            );
+        
+    
+            tile_layer_c3fe7785ca3241636040c2e7d46bed95.addTo(map_0194f63d03556ed2ed92e3cb488b38ca);
+        
+    
+            var marker_e18cea800adb4b683e22c6df494210b9 = L.marker(
+                [43.1158533, 141.3801858],
+                {
+}
+            ).addTo(map_0194f63d03556ed2ed92e3cb488b38ca);
+        
+    
+            var icon_35030586fbbe4d18fd962a2d575c8b58 = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "red",
+  "iconColor": "white",
+  "icon": "flag",
+  "prefix": "glyphicon",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_d62c97174610d9494de894bf83fbcca1 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_e9d86182591b8b5ec7e48372fffa6d8e = $(`<div id="html_e9d86182591b8b5ec7e48372fffa6d8e" style="width: 100.0%; height: 100.0%;"><b>目的地：丘珠空港</b><br>43.11585, 141.38019</div>`)[0];
+                popup_d62c97174610d9494de894bf83fbcca1.setContent(html_e9d86182591b8b5ec7e48372fffa6d8e);
+            
+        
+
+        marker_e18cea800adb4b683e22c6df494210b9.bindPopup(popup_d62c97174610d9494de894bf83fbcca1)
+        ;
+
+        
+    
+    
+                marker_e18cea800adb4b683e22c6df494210b9.setIcon(icon_35030586fbbe4d18fd962a2d575c8b58);
+            
+    
+            var circle_314dbb7e9c051f0172e8fba602ea4baa = L.circle(
+                [43.1158533, 141.3801858],
+                {"bubblingMouseEvents": true, "color": "#2C3E50", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "#2C3E50", "fillOpacity": 0.06, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 1000.0, "stroke": true, "weight": 2}
+            ).addTo(map_0194f63d03556ed2ed92e3cb488b38ca);
+        
+    
+        var popup_f22b62bb86ebcd3625a85197a60cbfd7 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_1ebaeefdcaea59a27f654cb497ad3d47 = $(`<div id="html_1ebaeefdcaea59a27f654cb497ad3d47" style="width: 100.0%; height: 100.0%;">搜尋半徑 1000 m</div>`)[0];
+                popup_f22b62bb86ebcd3625a85197a60cbfd7.setContent(html_1ebaeefdcaea59a27f654cb497ad3d47);
+            
+        
+
+        circle_314dbb7e9c051f0172e8fba602ea4baa.bindPopup(popup_f22b62bb86ebcd3625a85197a60cbfd7)
+        ;
+
+        
+    
+    
+            var marker_963c36160e1650064038e09e70d4efd9 = L.marker(
+                [43.1130574, 141.3697387],
+                {
+}
+            ).addTo(map_0194f63d03556ed2ed92e3cb488b38ca);
+        
+    
+            var icon_89bf4a69b1cc3b00de7e75ef7e43ee6f = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "orange",
+  "iconColor": "white",
+  "icon": "car",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_516004126af729542fb644ced5642bf1 = L.popup({
+  "maxWidth": 260,
+});
+
+        
+            
+                var html_fd6a87ea65a81e648d95973d1a74c677 = $(`<div id="html_fd6a87ea65a81e648d95973d1a74c677" style="width: 100.0%; height: 100.0%;"><b>way/155426508</b><br>經緯度: 43.11306, 141.36974<br>容量: 141 位<br>可停機率: 46.9%<br>預估空位: 141 位<br>距目的地: 903 m（步行約 11 分）</div>`)[0];
+                popup_516004126af729542fb644ced5642bf1.setContent(html_fd6a87ea65a81e648d95973d1a74c677);
+            
+        
+
+        marker_963c36160e1650064038e09e70d4efd9.bindPopup(popup_516004126af729542fb644ced5642bf1)
+        ;
+
+        
+    
+    
+            marker_963c36160e1650064038e09e70d4efd9.bindTooltip(
+                `<div>
+                     way/155426508  可停 47%
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+                marker_963c36160e1650064038e09e70d4efd9.setIcon(icon_89bf4a69b1cc3b00de7e75ef7e43ee6f);
+            
+    
+            var marker_f9c19e9d3c55a893f0bb6663c003ea3f = L.marker(
+                [43.1130755, 141.3689709],
+                {
+}
+            ).addTo(map_0194f63d03556ed2ed92e3cb488b38ca);
+        
+    
+            var icon_e4d1d33ba2081ce6b167d9fcdd31d43c = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "orange",
+  "iconColor": "white",
+  "icon": "car",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_2705eb3476849155f276210c1508d272 = L.popup({
+  "maxWidth": 260,
+});
+
+        
+            
+                var html_673a8023022f0983fff84dab0b822879 = $(`<div id="html_673a8023022f0983fff84dab0b822879" style="width: 100.0%; height: 100.0%;"><b>way/1143910411</b><br>經緯度: 43.11308, 141.36897<br>容量: 72 位<br>可停機率: 46.6%<br>預估空位: 72 位<br>距目的地: 961 m（步行約 12 分）</div>`)[0];
+                popup_2705eb3476849155f276210c1508d272.setContent(html_673a8023022f0983fff84dab0b822879);
+            
+        
+
+        marker_f9c19e9d3c55a893f0bb6663c003ea3f.bindPopup(popup_2705eb3476849155f276210c1508d272)
+        ;
+
+        
+    
+    
+            marker_f9c19e9d3c55a893f0bb6663c003ea3f.bindTooltip(
+                `<div>
+                     way/1143910411  可停 47%
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+                marker_f9c19e9d3c55a893f0bb6663c003ea3f.setIcon(icon_e4d1d33ba2081ce6b167d9fcdd31d43c);
+            
+    
+            var marker_3aa8aa1d1f383cbca0aff80516645434 = L.marker(
+                [43.1171318, 141.3736912],
+                {
+}
+            ).addTo(map_0194f63d03556ed2ed92e3cb488b38ca);
+        
+    
+            var icon_499438bddf433c6254ecf6c206794d76 = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "orange",
+  "iconColor": "white",
+  "icon": "car",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_8b9d2283f74948e1f95f850025ad8c27 = L.popup({
+  "maxWidth": 260,
+});
+
+        
+            
+                var html_37024c04171ceb9098b97455d26f085a = $(`<div id="html_37024c04171ceb9098b97455d26f085a" style="width: 100.0%; height: 100.0%;"><b>way/155518215</b><br>經緯度: 43.11713, 141.37369<br>容量: 129 位<br>可停機率: 45.6%<br>預估空位: 128 位<br>距目的地: 546 m（步行約 7 分）</div>`)[0];
+                popup_8b9d2283f74948e1f95f850025ad8c27.setContent(html_37024c04171ceb9098b97455d26f085a);
+            
+        
+
+        marker_3aa8aa1d1f383cbca0aff80516645434.bindPopup(popup_8b9d2283f74948e1f95f850025ad8c27)
+        ;
+
+        
+    
+    
+            marker_3aa8aa1d1f383cbca0aff80516645434.bindTooltip(
+                `<div>
+                     way/155518215  可停 46%
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+                marker_3aa8aa1d1f383cbca0aff80516645434.setIcon(icon_499438bddf433c6254ecf6c206794d76);
+            
+    
+            var marker_1008e47af34b0e5615b33ef7a64275ab = L.marker(
+                [43.1075798, 141.3755891],
+                {
+}
+            ).addTo(map_0194f63d03556ed2ed92e3cb488b38ca);
+        
+    
+            var icon_890184bdbba820dee56fa417769ba288 = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "orange",
+  "iconColor": "white",
+  "icon": "car",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_312ef90d7b2c6cbdc5c8adb24ea2b8d9 = L.popup({
+  "maxWidth": 260,
+});
+
+        
+            
+                var html_4ff3fe0c1334640fcf5f2b8af5f4794e = $(`<div id="html_4ff3fe0c1334640fcf5f2b8af5f4794e" style="width: 100.0%; height: 100.0%;"><b>way/1135839336</b><br>經緯度: 43.10758, 141.37559<br>容量: 65 位<br>可停機率: 44.7%<br>預估空位: 64 位<br>距目的地: 993 m（步行約 12 分）</div>`)[0];
+                popup_312ef90d7b2c6cbdc5c8adb24ea2b8d9.setContent(html_4ff3fe0c1334640fcf5f2b8af5f4794e);
+            
+        
+
+        marker_1008e47af34b0e5615b33ef7a64275ab.bindPopup(popup_312ef90d7b2c6cbdc5c8adb24ea2b8d9)
+        ;
+
+        
+    
+    
+            marker_1008e47af34b0e5615b33ef7a64275ab.bindTooltip(
+                `<div>
+                     way/1135839336  可停 45%
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+                marker_1008e47af34b0e5615b33ef7a64275ab.setIcon(icon_890184bdbba820dee56fa417769ba288);
+            
+    
+            var marker_24261ec2d2603dac249541993e60a3b7 = L.marker(
+                [43.1080234, 141.3755464],
+                {
+}
+            ).addTo(map_0194f63d03556ed2ed92e3cb488b38ca);
+        
+    
+            var icon_13b1944d885739c4df49feeadd21ec1c = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "orange",
+  "iconColor": "white",
+  "icon": "car",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_3a6dd0f1a56f489d9f7225898462aa35 = L.popup({
+  "maxWidth": 260,
+});
+
+        
+            
+                var html_a2ea8793e0addd3182d82822ba2ba187 = $(`<div id="html_a2ea8793e0addd3182d82822ba2ba187" style="width: 100.0%; height: 100.0%;"><b>way/1135839154</b><br>經緯度: 43.10802, 141.37555<br>容量: 18 位<br>可停機率: 42.0%<br>預估空位: 18 位<br>距目的地: 949 m（步行約 12 分）</div>`)[0];
+                popup_3a6dd0f1a56f489d9f7225898462aa35.setContent(html_a2ea8793e0addd3182d82822ba2ba187);
+            
+        
+
+        marker_24261ec2d2603dac249541993e60a3b7.bindPopup(popup_3a6dd0f1a56f489d9f7225898462aa35)
+        ;
+
+        
+    
+    
+            marker_24261ec2d2603dac249541993e60a3b7.bindTooltip(
+                `<div>
+                     way/1135839154  可停 42%
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+                marker_24261ec2d2603dac249541993e60a3b7.setIcon(icon_13b1944d885739c4df49feeadd21ec1c);
+            
+    
+            var marker_ff3ae3431c0b7831e27ade9ccebbdcb0 = L.marker(
+                [43.1100621, 141.3815228],
+                {
+}
+            ).addTo(map_0194f63d03556ed2ed92e3cb488b38ca);
+        
+    
+            var icon_36238a919743aa49b1da8cd109a991c6 = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "orange",
+  "iconColor": "white",
+  "icon": "car",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_9e271e74804295c023978708485113b4 = L.popup({
+  "maxWidth": 260,
+});
+
+        
+            
+                var html_e10d623bc237dd290f9f901f802a8476 = $(`<div id="html_e10d623bc237dd290f9f901f802a8476" style="width: 100.0%; height: 100.0%;"><b>way/155371024</b><br>經緯度: 43.11006, 141.38152<br>容量: 29 位<br>可停機率: 39.1%<br>預估空位: 28 位<br>距目的地: 653 m（步行約 8 分）</div>`)[0];
+                popup_9e271e74804295c023978708485113b4.setContent(html_e10d623bc237dd290f9f901f802a8476);
+            
+        
+
+        marker_ff3ae3431c0b7831e27ade9ccebbdcb0.bindPopup(popup_9e271e74804295c023978708485113b4)
+        ;
+
+        
+    
+    
+            marker_ff3ae3431c0b7831e27ade9ccebbdcb0.bindTooltip(
+                `<div>
+                     way/155371024  可停 39%
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+                marker_ff3ae3431c0b7831e27ade9ccebbdcb0.setIcon(icon_36238a919743aa49b1da8cd109a991c6);
+            
+    
+            var marker_164bc76a1e60524a58e91b00f23b4ef7 = L.marker(
+                [43.1223014, 141.3832972],
+                {
+}
+            ).addTo(map_0194f63d03556ed2ed92e3cb488b38ca);
+        
+    
+            var icon_0f402d9243da40bd529ff0875b4e0fc3 = L.AwesomeMarkers.icon(
+                {
+  "markerColor": "orange",
+  "iconColor": "white",
+  "icon": "car",
+  "prefix": "fa",
+  "extraClasses": "fa-rotate-0",
+}
+            );
+        
+    
+        var popup_0dcd3143db97c79797204c9000c6689b = L.popup({
+  "maxWidth": 260,
+});
+
+        
+            
+                var html_f4e5227c6de190d19c0f194c59a2bdf5 = $(`<div id="html_f4e5227c6de190d19c0f194c59a2bdf5" style="width: 100.0%; height: 100.0%;"><b>way/1089577500</b><br>經緯度: 43.12230, 141.38330<br>容量: 37 位<br>可停機率: 37.0%<br>預估空位: 36 位<br>距目的地: 760 m（步行約 10 分）</div>`)[0];
+                popup_0dcd3143db97c79797204c9000c6689b.setContent(html_f4e5227c6de190d19c0f194c59a2bdf5);
+            
+        
+
+        marker_164bc76a1e60524a58e91b00f23b4ef7.bindPopup(popup_0dcd3143db97c79797204c9000c6689b)
+        ;
+
+        
+    
+    
+            marker_164bc76a1e60524a58e91b00f23b4ef7.bindTooltip(
+                `<div>
+                     way/1089577500  可停 37%
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+    
+                marker_164bc76a1e60524a58e91b00f23b4ef7.setIcon(icon_0f402d9243da40bd529ff0875b4e0fc3);
+            
+    
+            map_0194f63d03556ed2ed92e3cb488b38ca.fitBounds(
+                [[43.1075798, 141.3689709], [43.1223014, 141.3832972]],
+                {}
+            );
+        
+</script>
+</html>

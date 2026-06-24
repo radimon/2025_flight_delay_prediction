@@ -463,9 +463,15 @@ if "parks_sorted" in st.session_state:
                 folium.Marker(
                     [plat, plng],
                     icon=folium.Icon(color=color, icon="car", prefix="fa"),
+                    tooltip=folium.Tooltip(
+                        f"<b>停車場 #{rank}</b><br>"
+                        f"🚶 步行 {dur_walk/60:.0f} 分（{dist_walk}m）<br>"
+                        f"🅿️ 可停機率 {row['p_avail']:.0%}",
+                        permanent=True, direction="top", offset=(0, -8)
+                    ),
                     popup=(f"<b>停車場 #{rank}</b><br>"
                            f"可停機率: {row['p_avail']:.2%}<br>"
-                           f"步行至終點: {dist_walk}m")
+                           f"步行至終點: {dur_walk/60:.0f} 分 / {dist_walk}m")
                 ).add_to(fmap)
 
                 all_points.extend([(plat, plng)] + list(coords_walk))
