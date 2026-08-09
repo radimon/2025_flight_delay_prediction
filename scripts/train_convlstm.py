@@ -1,0 +1,510 @@
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from src.preprocess import split_by_day
+from src.priors import (
+    add_calendar_features,
+    build_priors,
+    attach_priors_with_backoff,
+    fit_baseline_hist,
+    predict_baseline_hist,
+)
+from src.ConvLSTM import (
+    ConvLSTMRegEmbed,
+    train_convlstm_embed,
+    save_convlstm_pkl,
+)
+
+
+# ============================================================
+# Paths
+# ============================================================
+
+DATA_PATH = Path("data/processed/sapporo_density.parquet")
+MODEL_PATH = Path("models/convlstm_sapporo.pkl")
+
+
+# ============================================================
+# Experiment configuration
+# ============================================================
+
+SEQ_LEN = 8
+
+EVENTS = [
+    {
+        "name": "rugbyworldcup",
+        "start": "2019-09-20",
+        "end": "2019-11-02",
+    }
+]
+
+
+# ============================================================
+# Feature preparation
+# ============================================================
+
+def prepare_training_data(df: pd.DataFrame):
+    """
+    Reproduce the preprocessing used by the final ConvLSTM
+    experiment.
+    """
+
+    df = df.copy()
+
+    # Remove sentinel grid
+    df = df[
+        ~(
+            (df["x"] == 999)
+            & (df["y"] == 999)
+        )
+    ].copy()
+
+    # --------------------------------------------------------
+    # Calendar basics
+    # --------------------------------------------------------
+
+    df["date"] = (
+        pd.to_datetime("2019-09-15")
+        + pd.to_timedelta(df["d"], unit="D")
+    )
+
+    df["weekday"] = df["date"].dt.weekday
+    df["is_weekend"] = (
+        df["weekday"] >= 5
+    ).astype(int)
+
+    # --------------------------------------------------------
+    # Sort before constructing lag features
+    # --------------------------------------------------------
+
+    df = df.sort_values(
+        ["x", "y", "t", "d"]
+    ).copy()
+
+    # --------------------------------------------------------
+    # Lag features
+    # --------------------------------------------------------
+
+    grouped = df.groupby(
+        ["x", "y", "t"]
+    )["count"]
+
+    for k in range(1, SEQ_LEN + 1):
+        df[f"lag_{k}"] = grouped.shift(k)
+
+    # --------------------------------------------------------
+    # Rolling features
+    # --------------------------------------------------------
+
+    df["rolling_3"] = grouped.transform(
+        lambda s: (
+            s.shift(1)
+            .rolling(3, min_periods=1)
+            .mean()
+        )
+    )
+
+    df["rolling_7"] = grouped.transform(
+        lambda s: (
+            s.shift(1)
+            .rolling(7, min_periods=1)
+            .mean()
+        )
+    )
+
+    # Same behavior as the notebook:
+    # only lag_1 is required.
+    df = df.dropna(
+        subset=["lag_1"]
+    ).copy()
+
+    # --------------------------------------------------------
+    # Train / validation / test split
+    # --------------------------------------------------------
+
+    train_df, val_df, test_df = split_by_day(
+        df,
+        test_days=7,
+        val_days=7,
+    )
+
+    # --------------------------------------------------------
+    # Calendar + event features
+    # --------------------------------------------------------
+
+    train_df = add_calendar_features(
+        train_df,
+        events=EVENTS,
+    )
+
+    val_df = add_calendar_features(
+        val_df,
+        events=EVENTS,
+    )
+
+    test_df = add_calendar_features(
+        test_df,
+        events=EVENTS,
+    )
+
+    # --------------------------------------------------------
+    # Hierarchical priors
+    # --------------------------------------------------------
+
+    keysA = [
+        "x",
+        "y",
+        "t",
+        "weekday",
+        "is_holiday",
+        "event_code",
+        "month",
+    ]
+
+    keysB = [
+        "x",
+        "y",
+        "t",
+        "weekday",
+    ]
+
+    keysC = [
+        "x",
+        "y",
+        "t",
+    ]
+
+    priA = build_priors(
+        train_df,
+        keysA,
+        alpha=1.0,
+    )
+
+    priB = build_priors(
+        train_df,
+        keysB,
+        alpha=1.0,
+    )
+
+    priC = build_priors(
+        train_df,
+        keysC,
+        alpha=1.0,
+    )
+
+    train_df = attach_priors_with_backoff(
+        train_df,
+        priA,
+        keysA,
+        priB,
+        keysB,
+        priC,
+        keysC,
+    )
+
+    val_df = attach_priors_with_backoff(
+        val_df,
+        priA,
+        keysA,
+        priB,
+        keysB,
+        priC,
+        keysC,
+    )
+
+    test_df = attach_priors_with_backoff(
+        test_df,
+        priA,
+        keysA,
+        priB,
+        keysB,
+        priC,
+        keysC,
+    )
+
+    # --------------------------------------------------------
+    # Historical baseline
+    #
+    # This intentionally overwrites base_log generated by
+    # the hierarchical priors because this is what the final
+    # notebook experiment does inside run_all_models().
+    # --------------------------------------------------------
+
+    hist = fit_baseline_hist(train_df)
+
+    for split_df in [
+        train_df,
+        val_df,
+        test_df,
+    ]:
+
+        split_df["y_hist"] = (
+            predict_baseline_hist(
+                split_df,
+                hist,
+            )
+        )
+
+        split_df["base_log"] = np.log1p(
+            split_df["y_hist"].to_numpy()
+        )
+
+        split_df["y_target"] = (
+            np.log1p(
+                split_df[
+                    "count"
+                ].to_numpy(np.float32)
+            )
+            - split_df[
+                "base_log"
+            ].to_numpy(np.float32)
+        ).astype(np.float32)
+
+    return (
+        train_df,
+        val_df,
+        test_df,
+        priB,
+    )
+
+
+# ============================================================
+# Training
+# ============================================================
+
+def train_model(
+    train_df,
+    val_df,
+    test_df,
+    priB,
+):
+    """
+    Train ConvLSTM using the configuration from the final
+    experiment notebook.
+    """
+
+    conv_spec = {
+        "hid_ch": 64,
+        "kernel_size": 3,
+        "patch_radius": 4,
+        "mlp": 256,
+
+        "n_weekday": 7,
+        "n_t": 48,
+
+        "n_x": (
+            int(
+                pd.concat(
+                    [
+                        train_df["x"],
+                        val_df["x"],
+                    ]
+                ).max()
+            )
+            + 1
+        ),
+
+        "n_y": (
+            int(
+                pd.concat(
+                    [
+                        train_df["y"],
+                        val_df["y"],
+                    ]
+                ).max()
+            )
+            + 1
+        ),
+
+        "emb_wd": 4,
+        "emb_t": 16,
+        "emb_x": 32,
+        "emb_y": 32,
+
+        "seq_len": SEQ_LEN,
+
+        "epochs": 40,
+        "lr": 1e-3,
+        "batch_size": 512,
+        "sample_n": 500_000,
+        "seed": 42,
+    }
+
+    # --------------------------------------------------------
+    # Model
+    # --------------------------------------------------------
+
+    model = ConvLSTMRegEmbed(
+        hid_ch=conv_spec["hid_ch"],
+        kernel_size=conv_spec["kernel_size"],
+
+        n_weekday=conv_spec["n_weekday"],
+        n_t=conv_spec["n_t"],
+        n_x=conv_spec["n_x"],
+        n_y=conv_spec["n_y"],
+
+        emb_wd=conv_spec["emb_wd"],
+        emb_t=conv_spec["emb_t"],
+        emb_x=conv_spec["emb_x"],
+        emb_y=conv_spec["emb_y"],
+
+        mlp=conv_spec["mlp"],
+    )
+
+    # Lookup contains all splits so temporal context is
+    # available for validation/test samples.
+    lookup_df = pd.concat(
+        [
+            train_df,
+            val_df,
+            test_df,
+        ],
+        ignore_index=True,
+    )
+
+    # --------------------------------------------------------
+    # Train
+    # --------------------------------------------------------
+
+    model = train_convlstm_embed(
+        model=model,
+
+        train_df=train_df,
+        val_df=val_df,
+
+        seq_len=conv_spec["seq_len"],
+        patch_radius=conv_spec["patch_radius"],
+
+        sample_n=conv_spec["sample_n"],
+        batch_size=conv_spec["batch_size"],
+
+        epochs=conv_spec["epochs"],
+        lr=conv_spec["lr"],
+        seed=conv_spec["seed"],
+
+        loss="huber",
+        huber_beta=1.0,
+
+        use_residual=True,
+        lookup_df=lookup_df,
+
+        neg_ratio=0.0,
+        w_nonzero=1.0,
+
+        freq_prior_df=priB,
+    )
+
+    return model, conv_spec
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def main():
+
+    # --------------------------------------------------------
+    # Check input
+    # --------------------------------------------------------
+
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(
+            f"Processed dataset not found: {DATA_PATH}\n"
+            "Run the preprocessing step first:\n"
+            "python -m scripts.prepare_data"
+        )
+
+    print(
+        f"Loading processed data from: {DATA_PATH}"
+    )
+
+    df = pd.read_parquet(
+        DATA_PATH
+    )
+
+    print(
+        f"Loaded {len(df):,} rows."
+    )
+
+    # --------------------------------------------------------
+    # Prepare data
+    # --------------------------------------------------------
+
+    print(
+        "Preparing training data..."
+    )
+
+    (
+        train_df,
+        val_df,
+        test_df,
+        priB,
+    ) = prepare_training_data(df)
+
+    print(
+        f"Train rows: {len(train_df):,}"
+    )
+
+    print(
+        f"Validation rows: {len(val_df):,}"
+    )
+
+    print(
+        f"Test rows: {len(test_df):,}"
+    )
+
+    print(
+        "Residual target std:",
+        train_df["y_target"].std(),
+    )
+
+    # --------------------------------------------------------
+    # Train
+    # --------------------------------------------------------
+
+    print(
+        "Starting ConvLSTM training..."
+    )
+
+    model, conv_spec = train_model(
+        train_df,
+        val_df,
+        test_df,
+        priB,
+    )
+
+    # --------------------------------------------------------
+    # Save
+    # --------------------------------------------------------
+
+    MODEL_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    save_convlstm_pkl(
+        model,
+        MODEL_PATH,
+        {
+            **conv_spec,
+            "hid_ch": conv_spec["hid_ch"],
+            "kernel_size": conv_spec[
+                "kernel_size"
+            ],
+            "patch_radius": conv_spec[
+                "patch_radius"
+            ],
+            "mlp": conv_spec["mlp"],
+        },
+    )
+
+    print("Training complete.")
+    print(
+        f"Model saved to: {MODEL_PATH}"
+    )
+
+
+if __name__ == "__main__":
+    main()

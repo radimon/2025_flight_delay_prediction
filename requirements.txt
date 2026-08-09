@@ -11,7 +11,7 @@ scikit-learn
 lightgbm
 openai
 torch
-dotenv
+python-dotenv
 holidays
 ipykernel
 polyline
